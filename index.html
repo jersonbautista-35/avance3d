@@ -50,7 +50,7 @@
 
 <script>
 /* ===================== CONFIGURACIÓN ===================== */
-const API_URL = 'https://script.google.com/macros/s/AKfycbylfH5KX8YaoW9vFCf1t2gdqr9AKc_pnCOh4jE00QsWSLcz82ygcx2JZAKNQgsH8lmQ/exec';   // URL /exec del proyecto EstadoAPI
+  const API_URL = 'estado.json';
 const PROP_CODIGO = ['CODIGO', 'ASSEMBLY_POS', 'PART_POS'];  // propiedad con la marca de la pieza
 const PROP_ORDEN = ['TIPO_DE_TORRE', 'SECCION_TORRE'];       // orden para llenar torre por torre
 const COLORES = { gris: '#9AA0A6', amarillo: '#F5C400', azul: '#1E6FD9', verde: '#2E9E44' };
@@ -112,7 +112,7 @@ function jsonp(url) {
 
 async function leerDatos() {
   try {
-    const r = await fetch(API_URL, { redirect: 'follow' });
+          const r = await fetch(API_URL + '?t=' + Date.now(), { cache: 'no-store' });
     return await r.json();
   } catch (e) {
     console.warn('fetch falló, uso JSONP:', e);
