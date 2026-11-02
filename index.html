@@ -97,7 +97,28 @@ async function leerPiezasDelModelo() {
   Object.values(piezas).forEach(arr => arr.sort((a, b) => a.orden.localeCompare(b.orden) || a.id - b.id));
   return { piezas, total, sinCodigo };
 }
+function jsonp(url) {
+  return new Promise((ok, mal) => {
+    const cb = 'cb_' + Date.now();
+    const s = document.createElement('script');
+    const t = setTimeout(() => { limpiar(); mal(new Error('Tiempo agotado al leer el registro')); }, 30000);
+    function limpiar() { clearTimeout(t); delete window[cb]; s.remove(); }
+    window[cb] = d => { limpiar(); ok(d); };
+    s.onerror = () => { limpiar(); mal(new Error('No se pudo cargar el registro (JSONP)')); };
+    s.src = url + '?callback=' + cb + '&t=' + Date.now();
+    document.head.appendChild(s);
+  });
+}
 
+async function leerDatos() {
+  try {
+    const r = await fetch(API_URL, { redirect: 'follow' });
+    return await r.json();
+  } catch (e) {
+    console.warn('fetch falló, uso JSONP:', e);
+    return await jsonp(API_URL);
+  }
+}
 async function actualizar() {
   $('btnAct').disabled = true;
   try {
@@ -108,8 +129,7 @@ async function actualizar() {
       PIEZAS = r.piezas;
     }
     msg('Leyendo el avance del registro…');
-    const res = await fetch(API_URL, { redirect: 'follow' });
-    DATOS = await res.json();
+           DATOS = await leerDatos();
     await pintar();
   } catch (e) { msg('Error: ' + (e.message || e), true); }
   finally { $('btnAct').disabled = false; }
