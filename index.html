@@ -25,7 +25,7 @@
   .msg{margin-top:10px;font-size:12px;color:var(--suave);white-space:pre-wrap}
   .err{color:#B3261E;font-weight:bold}
   details{margin-top:8px;font-size:12px} summary{cursor:pointer;color:var(--suave)}
-  #listaSin,#listaDif{margin-top:4px;line-height:1.5}
+  #listaSin,#listaDif,#listaTipos{margin-top:4px;line-height:1.5}
 </style>
 </head>
 <body>
@@ -48,6 +48,7 @@
 
 <details id="detSin" style="display:none"><summary id="sumSin"></summary><div id="listaSin"></div></details>
 <details id="detDif" style="display:none"><summary id="sumDif"></summary><div id="listaDif"></div></details>
+<details id="detTipos" style="display:none"><summary id="sumTipos"></summary><div id="listaTipos"></div></details>
 <div class="msg" id="msg"></div>
 
 <script>
@@ -55,6 +56,7 @@
 const API_URL = 'estado.json';                               // publicado por Apps Script en este mismo repositorio
 const PROP_CODIGO = ['CODIGO', 'ASSEMBLY_POS', 'PART_POS'];  // propiedad con la marca de la pieza
 const PROP_ORDEN = ['TIPO_DE_TORRE', 'SECCION_TORRE'];       // orden para llenar torre por torre
+const EXCLUIR_CLASES = /FASTENER|BOLT|ACCESSORY|WELD|OPENING|ASSEMBLY/;  // pernos, tuercas, arandelas, soldaduras: no se cuentan ni se pintan
 const COLORES = { gris: '#9AA0A6', amarillo: '#F5C400', azul: '#1E6FD9', verde: '#2E9E44' };
 const NOMBRES = { gris: 'Sin iniciar', amarillo: 'Corte y punzonado', azul: 'Galvanizado', verde: 'Despachado' };
 /* ========================================================= */
@@ -85,12 +87,15 @@ const clave = s => norm(s).replace(/[^A-Z0-9]/g, '').replace(/^([A-Z]+)0+(?=\d)/
 async function leerPiezasDelModelo() {
   const grupos = await API.viewer.getObjects();
   const piezas = {}; let total = 0, sinCodigo = 0;
+  const clases = {};   // clase IFC -> { usadas, excluidas }
   for (const g of grupos) {
     const ids = (g.objects || []).map(o => o.id);
     for (let i = 0; i < ids.length; i += 1000) {
       const props = await API.viewer.getObjectProperties(g.modelId, ids.slice(i, i + 1000));
       for (const p of props) {
-        if (norm(p.class) === 'IFCELEMENTASSEMBLY') continue;      // evita contar dos veces el conjunto y su pieza
+        const cls = norm(p.class) || '(SIN CLASE)';
+        const cc = clases[cls] = clases[cls] || { usadas: 0, excluidas: 0 };
+        if (EXCLUIR_CLASES.test(cls)) { cc.excluidas++; continue; }   // conjuntos y pernos no son piezas del LISTADO
         const valores = {};
         (p.properties || []).forEach(ps => (ps.properties || []).forEach(x => { const k = norm(x.name); if (!(k in valores)) valores[k] = x.value; }));
         const nombre = PROP_CODIGO.find(n => valores[n] != null && String(valores[n]).trim() !== '');
@@ -98,12 +103,23 @@ async function leerPiezasDelModelo() {
         const cod = clave(valores[nombre]);
         const orden = PROP_ORDEN.map(n => String(valores[n] || '')).join('|');
         (piezas[cod] = piezas[cod] || []).push({ modelId: g.modelId, id: p.id, orden: orden });
+        cc.usadas++;
         total++;
       }
     }
   }
   Object.values(piezas).forEach(arr => arr.sort((a, b) => a.orden.localeCompare(b.orden) || a.id - b.id));
+  mostrarTipos(clases);
   return { piezas, total, sinCodigo };
+}
+
+/* muestra qué tipos de objeto IFC se leyeron y cuáles se excluyeron */
+function mostrarTipos(clases) {
+  const filas = Object.entries(clases).sort((a, b) => (b[1].usadas + b[1].excluidas) - (a[1].usadas + a[1].excluidas));
+  const excl = filas.reduce((a, [, v]) => a + v.excluidas, 0);
+  $('detTipos').style.display = 'block';
+  $('sumTipos').textContent = 'Tipos de objeto del modelo (' + excl.toLocaleString('es-PE') + ' excluidos)';
+  $('listaTipos').textContent = filas.map(([k, v]) => `${k}: ${v.usadas} contadas` + (v.excluidas ? `, ${v.excluidas} excluidas` : '')).join(' · ');
 }
 
 async function leerDatos() {
