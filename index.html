@@ -25,6 +25,7 @@
   .msg{margin-top:10px;font-size:12px;color:var(--suave);white-space:pre-wrap}
   .err{color:#B3261E;font-weight:bold}
   details{margin-top:8px;font-size:12px} summary{cursor:pointer;color:var(--suave)}
+  #listaSin,#listaDif{margin-top:4px;line-height:1.5}
 </style>
 </head>
 <body>
@@ -46,12 +47,12 @@
 <button class="btn sec" onclick="restablecer()">Quitar colores</button>
 
 <details id="detSin" style="display:none"><summary id="sumSin"></summary><div id="listaSin"></div></details>
-     <details id="detDif" style="display:none"><summary id="sumDif"></summary><div id="listaDif"></div></details>
+<details id="detDif" style="display:none"><summary id="sumDif"></summary><div id="listaDif"></div></details>
 <div class="msg" id="msg"></div>
 
 <script>
 /* ===================== CONFIGURACIÓN ===================== */
-  const API_URL = 'estado.json';
+const API_URL = 'estado.json';                               // publicado por Apps Script en este mismo repositorio
 const PROP_CODIGO = ['CODIGO', 'ASSEMBLY_POS', 'PART_POS'];  // propiedad con la marca de la pieza
 const PROP_ORDEN = ['TIPO_DE_TORRE', 'SECCION_TORRE'];       // orden para llenar torre por torre
 const COLORES = { gris: '#9AA0A6', amarillo: '#F5C400', azul: '#1E6FD9', verde: '#2E9E44' };
@@ -62,17 +63,23 @@ let API = null, PIEZAS = null, DATOS = null;   // PIEZAS: {codigo: [{modelId, id
 const $ = id => document.getElementById(id);
 const msg = (t, e) => { $('msg').textContent = t; $('msg').className = 'msg' + (e ? ' err' : ''); };
 const norm = s => String(s == null ? '' : s).trim().toUpperCase();
+// RD012 = RD12, RB006 = RB6; también ignora guiones y espacios
 const clave = s => norm(s).replace(/[^A-Z0-9]/g, '').replace(/^([A-Z]+)0+(?=\d)/, '$1');
+
 (async function iniciar() {
   if (window.parent === window) { $('sub').textContent = 'Abra esta página como extensión dentro de Trimble Connect.'; return; }
+  const aviso = setTimeout(() => {
+    $('sub').textContent = 'El visor no responde. Cierre y vuelva a abrir este panel.';
+  }, 40000);
   try {
     API = await TrimbleConnectWorkspace.connect(window.parent, (evento) => {
       if (evento === 'viewer.onModelStateChanged') { PIEZAS = null; }
     }, 30000);
+    clearTimeout(aviso);
     $('sub').textContent = 'Conectado. Cargue el modelo y pulse Actualizar.';
     $('btnAct').disabled = false;
     actualizar();
-  } catch (e) { $('sub').textContent = 'No se pudo conectar con el visor: ' + e; }
+  } catch (e) { clearTimeout(aviso); $('sub').textContent = 'No se pudo conectar con el visor: ' + e; }
 })();
 
 async function leerPiezasDelModelo() {
@@ -98,41 +105,16 @@ async function leerPiezasDelModelo() {
   Object.values(piezas).forEach(arr => arr.sort((a, b) => a.orden.localeCompare(b.orden) || a.id - b.id));
   return { piezas, total, sinCodigo };
 }
-function jsonp(url) {
-  return new Promise((ok, mal) => {
-    const cb = 'cb_' + Date.now();
-    const s = document.createElement('script');
-    const t = setTimeout(() => { limpiar(); mal(new Error('Tiempo agotado al leer el registro')); }, 30000);
-    function limpiar() { clearTimeout(t); delete window[cb]; s.remove(); }
-    window[cb] = d => { limpiar(); ok(d); };
-    s.onerror = () => { limpiar(); mal(new Error('No se pudo cargar el registro (JSONP)')); };
-    s.src = url + '?callback=' + cb + '&t=' + Date.now();
-    document.head.appendChild(s);
-  });
-}
 
 async function leerDatos() {
-  try {
-          const r = await fetch(API_URL + '?t=' + Date.now(), { cache: 'no-store' });
-    return await r.json();
-  } catch (e) {
-    console.warn('fetch falló, uso JSONP:', e);
-    return await jsonp(API_URL);
-  }
+  const r = await fetch(API_URL + '?t=' + Date.now(), { cache: 'no-store' });
+  if (!r.ok) throw new Error('No se pudo leer ' + API_URL + ' (HTTP ' + r.status + ')');
+  const d = await r.json();
+  d.piezas = Object.fromEntries(Object.entries(d.piezas || {}).map(([k, v]) => [clave(k), v]));
+  return d;
 }
-  function mostrarDiferencias() {
-  const dif = [];
-  for (const cod in PIEZAS) {
-    const d = DATOS.piezas[cod]; if (!d) continue;
-    const M = PIEZAS[cod].length, T = d[0];
-    if (M !== T) dif.push(cod + ': modelo ' + M + ' / LISTADO ' + T);
-  }
-  $('detDif').style.display = dif.length ? '' : 'none';
-  $('sumDif').textContent = dif.length + ' códigos con cantidad distinta (modelo vs LISTADO)';
-  $('listaDif').textContent = dif.join(' · ');
-}
+
 async function actualizar() {
-  <details id="detDif" style="display:none"><summary id="sumDif"></summary><div id="listaDif"></div></details>
   $('btnAct').disabled = true;
   try {
     if (!PIEZAS) {
@@ -142,10 +124,9 @@ async function actualizar() {
       PIEZAS = r.piezas;
     }
     msg('Leyendo el avance del registro…');
-           DATOS = await leerDatos();
-        DATOS.piezas = Object.fromEntries(Object.entries(DATOS.piezas).map(([k, v]) => [clave(k), v]));
+    DATOS = await leerDatos();
     await pintar();
-        mostrarDiferencias();
+    mostrarDiferencias();
   } catch (e) { msg('Error: ' + (e.message || e), true); }
   finally { $('btnAct').disabled = false; }
 }
@@ -208,6 +189,20 @@ function mostrarResumen(cuenta, sinDatos) {
     $('listaSin').textContent = sinDatos.join(', ');
   } else $('detSin').style.display = 'none';
   msg('');
+}
+
+/* compara cuántas veces aparece cada código en el modelo vs. la CANT TOT del LISTADO */
+function mostrarDiferencias() {
+  const dif = [];
+  for (const cod in PIEZAS) {
+    const d = DATOS.piezas[cod]; if (!d) continue;
+    const M = PIEZAS[cod].length, T = d[0];
+    if (M !== T) dif.push({ cod, M, T });
+  }
+  dif.sort((a, b) => (b.M - b.T) - (a.M - a.T));
+  $('detDif').style.display = dif.length ? 'block' : 'none';
+  $('sumDif').textContent = dif.length + ' códigos con cantidad distinta (modelo vs LISTADO)';
+  $('listaDif').textContent = dif.map(x => `${x.cod}: modelo ${x.M} / LISTADO ${x.T}`).join(', ');
 }
 
 async function restablecer() {
