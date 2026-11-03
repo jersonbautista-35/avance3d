@@ -57,6 +57,7 @@ const API_URL = 'estado.json';                               // publicado por Ap
 const PROP_CODIGO = ['CODIGO', 'ASSEMBLY_POS', 'PART_POS'];  // propiedad con la marca de la pieza
 const PROP_ORDEN = ['TIPO_DE_TORRE', 'SECCION_TORRE'];       // orden para llenar torre por torre
 const EXCLUIR_CLASES = /FASTENER|BOLT|ACCESSORY|WELD|OPENING|ASSEMBLY/;  // pernos, tuercas, arandelas, soldaduras: no se cuentan ni se pintan
+const IGNORAR_CODIGOS = /^(PL|A)\d+$/;   // letreros y texto del nombre de la torre (referencias, no se fabrican)
 const COLORES = { gris: '#9AA0A6', amarillo: '#F5C400', azul: '#1E6FD9', verde: '#2E9E44' };
 const NOMBRES = { gris: 'Sin iniciar', amarillo: 'Corte y punzonado', azul: 'Galvanizado', verde: 'Despachado' };
 /* ========================================================= */
@@ -88,6 +89,7 @@ async function leerPiezasDelModelo() {
   const grupos = await API.viewer.getObjects();
   const piezas = {}; let total = 0, sinCodigo = 0;
   const clases = {};   // clase IFC -> { usadas, excluidas }
+  let referencias = 0;
   for (const g of grupos) {
     const ids = (g.objects || []).map(o => o.id);
     for (let i = 0; i < ids.length; i += 1000) {
@@ -101,6 +103,7 @@ async function leerPiezasDelModelo() {
         const nombre = PROP_CODIGO.find(n => valores[n] != null && String(valores[n]).trim() !== '');
         if (!nombre) { sinCodigo++; continue; }
         const cod = clave(valores[nombre]);
+        if (IGNORAR_CODIGOS.test(cod)) { referencias++; cc.excluidas++; continue; }   // PL.. y A..: letreros, no son piezas
         const orden = PROP_ORDEN.map(n => String(valores[n] || '')).join('|');
         (piezas[cod] = piezas[cod] || []).push({ modelId: g.modelId, id: p.id, orden: orden });
         cc.usadas++;
@@ -109,17 +112,17 @@ async function leerPiezasDelModelo() {
     }
   }
   Object.values(piezas).forEach(arr => arr.sort((a, b) => a.orden.localeCompare(b.orden) || a.id - b.id));
-  mostrarTipos(clases);
+  mostrarTipos(clases, referencias);
   return { piezas, total, sinCodigo };
 }
 
 /* muestra qué tipos de objeto IFC se leyeron y cuáles se excluyeron */
-function mostrarTipos(clases) {
+function mostrarTipos(clases, referencias) {
   const filas = Object.entries(clases).sort((a, b) => (b[1].usadas + b[1].excluidas) - (a[1].usadas + a[1].excluidas));
   const excl = filas.reduce((a, [, v]) => a + v.excluidas, 0);
   $('detTipos').style.display = 'block';
   $('sumTipos').textContent = 'Tipos de objeto del modelo (' + excl.toLocaleString('es-PE') + ' excluidos)';
-  $('listaTipos').textContent = filas.map(([k, v]) => `${k}: ${v.usadas} contadas` + (v.excluidas ? `, ${v.excluidas} excluidas` : '')).join(' · ');
+  $('listaTipos').textContent = (referencias ? `Referencias PL/A ignoradas (letreros): ${referencias} · ` : '') + filas.map(([k, v]) => `${k}: ${v.usadas} contadas` + (v.excluidas ? `, ${v.excluidas} excluidas` : '')).join(' · ');
 }
 
 async function leerDatos() {
