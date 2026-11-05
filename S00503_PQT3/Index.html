@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Avance de fabricación</title>
+<script src="https://components.connect.trimble.com/trimble-connect-workspace-api/index.js"></script>
+<style>
+  :root{--acero:#27323A;--zinc:#D5DADE;--suave:#5B6870;--amarillo:#F5C400}
+  *{box-sizing:border-box}
+  body{margin:0;padding:12px;font:13px/1.4 Arial,sans-serif;color:#1C2328;background:#fff}
+  h1{font-size:16px;margin:0 0 2px;color:var(--acero)}
+  .sub{color:var(--suave);font-size:12px;margin-bottom:10px}
+  .btn{width:100%;border:0;border-radius:6px;padding:9px;font:bold 13px Arial;cursor:pointer;margin-top:6px}
+  .prim{background:var(--amarillo);color:var(--acero)} .sec{background:#fff;border:2px solid var(--zinc);color:var(--acero)}
+  .btn:disabled{opacity:.5;cursor:default}
+  .ley{margin:12px 0;border:1px solid var(--zinc);border-radius:6px}
+  .ley div{display:flex;align-items:center;gap:8px;padding:7px 10px;border-bottom:1px solid #EEF0F2}
+  .ley div:last-child{border-bottom:0}
+  .sw{width:16px;height:16px;border-radius:3px;flex:none}
+  .ley b{margin-left:auto}
+  .barra{display:flex;height:14px;border-radius:7px;overflow:hidden;background:#E3E6E8;margin:6px 0 2px}
+  label{display:block;font-size:12px;color:var(--suave);margin-top:8px}
+  select{width:100%;padding:6px;border:2px solid var(--zinc);border-radius:6px;font:13px Arial}
+  .msg{margin-top:10px;font-size:12px;color:var(--suave);white-space:pre-wrap}
+  .err{color:#B3261E;font-weight:bold}
+  details{margin-top:8px;font-size:12px} summary{cursor:pointer;color:var(--suave)}
+  #listaSin,#listaDif,#listaTipos{margin-top:4px;line-height:1.5}
+</style>
+</head>
+<body>
+<h1>Avance de fabricación</h1>
+<div class="sub" id="sub">Conectando con el visor…</div>
+
+<div class="barra" id="barra"></div>
+<div class="sub" id="pct"></div>
+
+<div class="ley" id="ley"></div>
+
+<label for="modo">Cómo pintar las marcas repetidas</label>
+<select id="modo" onchange="pintar()">
+  <option value="prop">Proporcional (N de M piezas, torre por torre)</option>
+  <option value="marca">Por marca (todas iguales según su estado)</option>
+</select>
+
+<button class="btn prim" id="btnAct" onclick="actualizar()" disabled>Actualizar avance</button>
+<button class="btn sec" onclick="restablecer()">Quitar colores</button>
+
+<details id="detSin" style="display:none"><summary id="sumSin"></summary><div id="listaSin"></div></details>
+<details id="detDif" style="display:none"><summary id="sumDif"></summary><div id="listaDif"></div></details>
+<details id="detTipos" style="display:none"><summary id="sumTipos"></summary><div id="listaTipos"></div></details>
+<div class="msg" id="msg"></div>
+
+<script>
+/* ===================== CONFIGURACIÓN ===================== */
+const API_URL = 'estado.json';                               // publicado por Apps Script en este mismo repositorio
+const PROP_CODIGO = ['CODIGO', 'ASSEMBLY_POS', 'PART_POS'];  // propiedad con la marca de la pieza
+const PROP_ORDEN = ['TIPO_DE_TORRE', 'SECCION_TORRE'];       // orden para llenar torre por torre
+const EXCLUIR_CLASES = /FASTENER|BOLT|ACCESSORY|WELD|OPENING|ASSEMBLY/;  // pernos, tuercas, arandelas, soldaduras: no se cuentan ni se pintan
+const IGNORAR_CODIGOS = /^(PL|A)\d+$/;   // letreros y texto del nombre de la torre (referencias, no se fabrican)
+const COLORES = { gris: '#9AA0A6', amarillo: '#F5C400', azul: '#1E6FD9', verde: '#2E9E44' };
+const NOMBRES = { gris: 'Sin iniciar', amarillo: 'Corte y punzonado', azul: 'Galvanizado', verde: 'Despachado' };
+/* ========================================================= */
+
+let API = null, PIEZAS = null, DATOS = null;   // PIEZAS: {codigo: [{modelId, id, orden}]}
+const $ = id => document.getElementById(id);
+const msg = (t, e) => { $('msg').textContent = t; $('msg').className = 'msg' + (e ? ' err' : ''); };
+const norm = s => String(s == null ? '' : s).trim().toUpperCase();
+// RD012 = RD12, RB006 = RB6; también ignora guiones y espacios
+const clave = s => norm(s).replace(/[^A-Z0-9]/g, '').replace(/^([A-Z]+)0+(?=\d)/, '$1');
+
+(async function iniciar() {
+  if (window.parent === window) { $('sub').textContent = 'Abra esta página como extensión dentro de Trimble Connect.'; return; }
+  const aviso = setTimeout(() => {
+    $('sub').textContent = 'El visor no responde. Cierre y vuelva a abrir este panel.';
+  }, 40000);
+  try {
+    API = await TrimbleConnectWorkspace.connect(window.parent, (evento) => {
+      if (evento === 'viewer.onModelStateChanged') { PIEZAS = null; }
+    }, 30000);
+    clearTimeout(aviso);
+    $('sub').textContent = 'Conectado. Cargue el modelo y pulse Actualizar.';
+    $('btnAct').disabled = false;
+    actualizar();
+  } catch (e) { clearTimeout(aviso); $('sub').textContent = 'No se pudo conectar con el visor: ' + e; }
+})();
+
+async function leerPiezasDelModelo() {
+  const grupos = await API.viewer.getObjects();
+  const piezas = {}; let total = 0, sinCodigo = 0;
+  const clases = {};   // clase IFC -> { usadas, excluidas }
+  let referencias = 0;
+  for (const g of grupos) {
+    const ids = (g.objects || []).map(o => o.id);
+    for (let i = 0; i < ids.length; i += 1000) {
+      const props = await API.viewer.getObjectProperties(g.modelId, ids.slice(i, i + 1000));
+      for (const p of props) {
+        const cls = norm(p.class) || '(SIN CLASE)';
+        const cc = clases[cls] = clases[cls] || { usadas: 0, excluidas: 0 };
+        if (EXCLUIR_CLASES.test(cls)) { cc.excluidas++; continue; }   // conjuntos y pernos no son piezas del LISTADO
+        const valores = {};
+        (p.properties || []).forEach(ps => (ps.properties || []).forEach(x => { const k = norm(x.name); if (!(k in valores)) valores[k] = x.value; }));
+        const nombre = PROP_CODIGO.find(n => valores[n] != null && String(valores[n]).trim() !== '');
+        if (!nombre) { sinCodigo++; continue; }
+        const cod = clave(valores[nombre]);
+        if (IGNORAR_CODIGOS.test(cod)) { referencias++; cc.excluidas++; continue; }   // PL.. y A..: letreros, no son piezas
+        const orden = PROP_ORDEN.map(n => String(valores[n] || '')).join('|');
+        (piezas[cod] = piezas[cod] || []).push({ modelId: g.modelId, id: p.id, orden: orden });
+        cc.usadas++;
+        total++;
+      }
+    }
+  }
+  Object.values(piezas).forEach(arr => arr.sort((a, b) => a.orden.localeCompare(b.orden) || a.id - b.id));
+  mostrarTipos(clases, referencias);
+  return { piezas, total, sinCodigo };
+}
+
+/* muestra qué tipos de objeto IFC se leyeron y cuáles se excluyeron */
+function mostrarTipos(clases, referencias) {
+  const filas = Object.entries(clases).sort((a, b) => (b[1].usadas + b[1].excluidas) - (a[1].usadas + a[1].excluidas));
+  const excl = filas.reduce((a, [, v]) => a + v.excluidas, 0);
+  $('detTipos').style.display = 'block';
+  $('sumTipos').textContent = 'Tipos de objeto del modelo (' + excl.toLocaleString('es-PE') + ' excluidos)';
+  $('listaTipos').textContent = (referencias ? `Referencias PL/A ignoradas (letreros): ${referencias} · ` : '') + filas.map(([k, v]) => `${k}: ${v.usadas} contadas` + (v.excluidas ? `, ${v.excluidas} excluidas` : '')).join(' · ');
+}
+
+async function leerDatos() {
+  const r = await fetch(API_URL + '?t=' + Date.now(), { cache: 'no-store' });
+  if (!r.ok) throw new Error('No se pudo leer ' + API_URL + ' (HTTP ' + r.status + ')');
+  const d = await r.json();
+  d.piezas = Object.fromEntries(Object.entries(d.piezas || {}).map(([k, v]) => [clave(k), v]));
+  return d;
+}
+
+async function actualizar() {
+  $('btnAct').disabled = true;
+  try {
+    if (!PIEZAS) {
+      msg('Leyendo las piezas del modelo…');
+      const r = await leerPiezasDelModelo();
+      if (!r.total) { msg('No se encontraron piezas con la propiedad ' + PROP_CODIGO.join(' / ') + '. ¿Está cargado el modelo?', true); return; }
+      PIEZAS = r.piezas;
+    }
+    msg('Leyendo el avance del registro…');
+    DATOS = await leerDatos();
+    await pintar();
+    mostrarDiferencias();
+  } catch (e) { msg('Error: ' + (e.message || e), true); }
+  finally { $('btnAct').disabled = false; }
+}
+
+/* reparte las M piezas de una marca entre los 4 colores */
+function repartir(M, d, modo) {
+  const [tot, c0, g0, v0] = d;
+  if (!tot) return { gris: M, amarillo: 0, azul: 0, verde: 0 };
+  const v = Math.min(v0, tot), g = Math.min(Math.max(g0, v), tot), c = Math.min(Math.max(c0, g), tot);
+  if (modo === 'marca') {
+    const col = v >= tot ? 'verde' : g >= tot ? 'azul' : c > 0 ? 'amarillo' : 'gris';
+    const r = { gris: 0, amarillo: 0, azul: 0, verde: 0 }; r[col] = M; return r;
+  }
+  const nV = Math.round(v / tot * M), nZ = Math.round(g / tot * M) - nV, nA = Math.round(c / tot * M) - nV - nZ;
+  return { verde: nV, azul: Math.max(0, nZ), amarillo: Math.max(0, nA), gris: Math.max(0, M - nV - Math.max(0, nZ) - Math.max(0, nA)) };
+}
+
+async function pintar() {
+  if (!PIEZAS || !DATOS) return;
+  const modo = $('modo').value;
+  const grupos = { gris: {}, amarillo: {}, azul: {}, verde: {} };   // color -> modelId -> [ids]
+  const cuenta = { gris: 0, amarillo: 0, azul: 0, verde: 0 };
+  const sinDatos = [];
+  for (const cod in PIEZAS) {
+    const arr = PIEZAS[cod];
+    const d = DATOS.piezas[cod];
+    if (!d) sinDatos.push(cod + ' (' + arr.length + ')');
+    const r = repartir(arr.length, d || [0, 0, 0, 0], modo);
+    let i = 0;
+    for (const col of ['verde', 'azul', 'amarillo', 'gris']) {
+      for (let k = 0; k < r[col]; k++, i++) {
+        const o = arr[i];
+        (grupos[col][o.modelId] = grupos[col][o.modelId] || []).push(o.id);
+        cuenta[col]++;
+      }
+    }
+  }
+  msg('Pintando el modelo…');
+  for (const col in grupos) {
+    for (const modelId in grupos[col]) {
+      const ids = grupos[col][modelId];
+      for (let i = 0; i < ids.length; i += 5000) {
+        await API.viewer.setObjectState({ modelObjectIds: [{ modelId, objectRuntimeIds: ids.slice(i, i + 5000) }] }, { color: COLORES[col] });
+      }
+    }
+  }
+  mostrarResumen(cuenta, sinDatos);
+}
+
+function mostrarResumen(cuenta, sinDatos) {
+  const total = Object.values(cuenta).reduce((a, b) => a + b, 0) || 1;
+  const orden = ['verde', 'azul', 'amarillo', 'gris'];
+  $('barra').innerHTML = orden.map(c => `<div style="width:${cuenta[c] / total * 100}%;background:${COLORES[c]}"></div>`).join('');
+  $('pct').textContent = `Despachado ${(cuenta.verde / total * 100).toFixed(1)}% · Galvanizado o más ${((cuenta.verde + cuenta.azul) / total * 100).toFixed(1)}% · Actualizado ${DATOS.actualizado}`;
+  $('ley').innerHTML = orden.map(c => `<div><span class="sw" style="background:${COLORES[c]}"></span>${NOMBRES[c]}<b>${cuenta[c].toLocaleString('es-PE')}</b></div>`).join('');
+  $('sub').textContent = total.toLocaleString('es-PE') + ' piezas en el modelo';
+  if (sinDatos.length) {
+    $('detSin').style.display = 'block';
+    $('sumSin').textContent = sinDatos.length + ' códigos del modelo no están en el LISTADO (se pintan gris)';
+    $('listaSin').textContent = sinDatos.join(', ');
+  } else $('detSin').style.display = 'none';
+  msg('');
+}
+
+/* compara cuántas veces aparece cada código en el modelo vs. la CANT TOT del LISTADO */
+function mostrarDiferencias() {
+  const dif = [];
+  for (const cod in PIEZAS) {
+    const d = DATOS.piezas[cod]; if (!d) continue;
+    const M = PIEZAS[cod].length, T = d[0];
+    if (M !== T) dif.push({ cod, M, T });
+  }
+  dif.sort((a, b) => (b.M - b.T) - (a.M - a.T));
+  $('detDif').style.display = dif.length ? 'block' : 'none';
+  $('sumDif').textContent = dif.length + ' códigos con cantidad distinta (modelo vs LISTADO)';
+  $('listaDif').textContent = dif.map(x => `${x.cod}: modelo ${x.M} / LISTADO ${x.T}`).join(', ');
+}
+
+async function restablecer() {
+  try { await API.viewer.setObjectState(undefined, { color: 'reset' }); msg('Colores restablecidos.'); } catch (e) { msg('Error: ' + e, true); }
+}
+</script>
+</body>
+</html>
