@@ -55,7 +55,7 @@
 /* ===================== CONFIGURACIÓN ===================== */
 const API_URL = 'estado.json';                               // publicado por Apps Script en este mismo repositorio
 const PROP_CODIGO = ['CODIGO', 'ASSEMBLY_POS', 'PART_POS'];  // propiedad con la marca de la pieza
-const PROP_ORDEN = ['TIPO_DE_TORRE', 'SECCION_TORRE'];       // orden para llenar torre por torre
+const PROP_ORDEN = ['TIPO_DE_TORRE', 'SECCION_TORRE', 'CONJ_ESTRUCTURAL'];       // orden para llenar torre por torre
 const EXCLUIR_CLASES = /FASTENER|BOLT|ACCESSORY|WELD|OPENING|ASSEMBLY/;  // pernos, tuercas, arandelas, soldaduras: no se cuentan ni se pintan
 const IGNORAR_CODIGOS = /^(PL|A)\d+$/;   // letreros y texto del nombre de la torre (referencias, no se fabrican)
 const COLORES = { gris: '#9AA0A6', amarillo: '#F5C400', azul: '#1E6FD9', verde: '#2E9E44' };
@@ -67,7 +67,8 @@ const $ = id => document.getElementById(id);
 const msg = (t, e) => { $('msg').textContent = t; $('msg').className = 'msg' + (e ? ' err' : ''); };
 const norm = s => String(s == null ? '' : s).trim().toUpperCase();
 // RD012 = RD12, RB006 = RB6; también ignora guiones y espacios
-const clave = s => norm(s).replace(/[^A-Z0-9]/g, '').replace(/^([A-Z]+)0+(?=\d)/, '$1');
+const clave = s => norm(s).replace(/[^A-Z0-9#]/g, '').replace(/^([A-Z]*)0+(?=\d)/, '$1');   // 014 = 14, RD012 = RD12, #003 se conserva
+const nombreProp = s => norm(s).replace(/^\d+\s*[.)\-]\s*/, '');   // "2. CODIGO" = CODIGO
 
 (async function iniciar() {
   if (window.parent === window) { $('sub').textContent = 'Abra esta página como extensión dentro de Trimble Connect.'; return; }
@@ -99,7 +100,7 @@ async function leerPiezasDelModelo() {
         const cc = clases[cls] = clases[cls] || { usadas: 0, excluidas: 0 };
         if (EXCLUIR_CLASES.test(cls)) { cc.excluidas++; continue; }   // conjuntos y pernos no son piezas del LISTADO
         const valores = {};
-        (p.properties || []).forEach(ps => (ps.properties || []).forEach(x => { const k = norm(x.name); if (!(k in valores)) valores[k] = x.value; }));
+        (p.properties || []).forEach(ps => (ps.properties || []).forEach(x => { const k = nombreProp(x.name); if (!(k in valores)) valores[k] = x.value; }));
         const nombre = PROP_CODIGO.find(n => valores[n] != null && String(valores[n]).trim() !== '');
         if (!nombre) { sinCodigo++; continue; }
         const cod = clave(valores[nombre]);
