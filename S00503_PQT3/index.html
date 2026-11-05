@@ -57,7 +57,7 @@ const API_URL = 'estado.json';                               // publicado por Ap
 const PROP_CODIGO = ['CODIGO', 'ASSEMBLY_POS', 'PART_POS'];  // propiedad con la marca de la pieza
 const PROP_ORDEN = ['TIPO_DE_TORRE', 'SECCION_TORRE', 'CONJ_ESTRUCTURAL'];       // orden para llenar torre por torre
 const EXCLUIR_CLASES = /FASTENER|BOLT|ACCESSORY|WELD|OPENING|ASSEMBLY/;  // pernos, tuercas, arandelas, soldaduras: no se cuentan ni se pintan
-const IGNORAR_CODIGOS = /^(PL|A)\d+$/;   // letreros y texto del nombre de la torre (referencias, no se fabrican)
+const IGNORAR_CODIGOS = /^(PL|A)\d+$|^\d+X+$/;   // PL../A..: letreros y textos; 2X, 3XX..: tuercas/arandelas de anclaje (no van en el LISTADO)
 const COLORES = { gris: '#9AA0A6', amarillo: '#F5C400', azul: '#1E6FD9', verde: '#2E9E44' };
 const NOMBRES = { gris: 'Sin iniciar', amarillo: 'Corte y punzonado', azul: 'Galvanizado', verde: 'Despachado' };
 /* ========================================================= */
@@ -67,7 +67,7 @@ const $ = id => document.getElementById(id);
 const msg = (t, e) => { $('msg').textContent = t; $('msg').className = 'msg' + (e ? ' err' : ''); };
 const norm = s => String(s == null ? '' : s).trim().toUpperCase();
 // RD012 = RD12, RB006 = RB6; también ignora guiones y espacios
-const clave = s => norm(s).replace(/[^A-Z0-9#]/g, '').replace(/^([A-Z]*)0+(?=\d)/, '$1');   // 014 = 14, RD012 = RD12, #003 se conserva
+const clave = s => norm(s).replace(/[^A-Z0-9#]/g, '').replace(/^(\d+)(R[BCD])$/, '$2$1').replace(/^([A-Z]*)0+(?=\d)/, '$1');   // 014 = 14, RD012 = RD12, 10RB = RB10, #003 se conserva
 const nombreProp = s => norm(s).replace(/^\d+\s*[.)\-]\s*/, '');   // "2. CODIGO" = CODIGO
 
 (async function iniciar() {
@@ -104,7 +104,7 @@ async function leerPiezasDelModelo() {
         const nombre = PROP_CODIGO.find(n => valores[n] != null && String(valores[n]).trim() !== '');
         if (!nombre) { sinCodigo++; continue; }
         const cod = clave(valores[nombre]);
-        if (IGNORAR_CODIGOS.test(cod)) { referencias++; cc.excluidas++; continue; }   // PL.. y A..: letreros, no son piezas
+        if (IGNORAR_CODIGOS.test(cod)) { referencias++; cc.excluidas++; continue; }   // letreros y accesorios de anclaje, no son piezas
         const orden = PROP_ORDEN.map(n => String(valores[n] || '')).join('|');
         (piezas[cod] = piezas[cod] || []).push({ modelId: g.modelId, id: p.id, orden: orden });
         cc.usadas++;
@@ -123,7 +123,7 @@ function mostrarTipos(clases, referencias) {
   const excl = filas.reduce((a, [, v]) => a + v.excluidas, 0);
   $('detTipos').style.display = 'block';
   $('sumTipos').textContent = 'Tipos de objeto del modelo (' + excl.toLocaleString('es-PE') + ' excluidos)';
-  $('listaTipos').textContent = (referencias ? `Referencias PL/A ignoradas (letreros): ${referencias} · ` : '') + filas.map(([k, v]) => `${k}: ${v.usadas} contadas` + (v.excluidas ? `, ${v.excluidas} excluidas` : '')).join(' · ');
+  $('listaTipos').textContent = (referencias ? `Códigos ignorados (letreros y accesorios de anclaje): ${referencias} · ` : '') + filas.map(([k, v]) => `${k}: ${v.usadas} contadas` + (v.excluidas ? `, ${v.excluidas} excluidas` : '')).join(' · ');
 }
 
 async function leerDatos() {
