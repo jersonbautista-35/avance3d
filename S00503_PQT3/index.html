@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Avance de fabricación</title>
+<!-- versión 2026-11-07c -->
 <script src="https://components.connect.trimble.com/trimble-connect-workspace-api/index.js"></script>
 <style>
   :root{--acero:#27323A;--zinc:#D5DADE;--suave:#5B6870;--amarillo:#F5C400}
@@ -56,7 +57,7 @@
 <div class="hint" id="fuente"></div>
 
 <div class="ley" id="ley"></div>
-<div class="hint" id="leyHint" style="display:none">Pulse una fase para ver solo esas piezas. Púlsela de nuevo para ver todo.</div>
+<div class="hint" id="leyHint" style="display:none">Pulse una fase para resaltar sus piezas. Púlsela de nuevo para ver todos los colores.</div>
 
 <label for="modo">Cómo pintar las marcas repetidas</label>
 <select id="modo" onchange="pintar()">
@@ -138,9 +139,11 @@ async function leerPiezasDelModelo() {
       const props = await API.viewer.getObjectProperties(g.modelId, ids.slice(i, i + 1000));
       for (const p of props) {
         const cls = norm(p.class) || '(SIN CLASE)';
-        if (!/ASSEMBLY/.test(cls)) (todos[g.modelId] = todos[g.modelId] || []).push(p.id);   // ocultar un conjunto ocultaría sus piezas
         const cc = clases[cls] = clases[cls] || { usadas: 0, excluidas: 0 };
-        if (EXCLUIR_CLASES.test(cls)) { cc.excluidas++; continue; }   // conjuntos y pernos no son piezas del LISTADO
+        // solo se ocultan objetos con geometría propia: piezas, pernos, soldaduras, letreros.
+        // Nunca conjuntos ni contenedores del IFC (proyecto, sitio, nivel), porque ocultarlos oculta todo lo que contienen.
+        const ocultable = () => (todos[g.modelId] = todos[g.modelId] || []).push(p.id);
+        if (EXCLUIR_CLASES.test(cls)) { cc.excluidas++; if (!/ASSEMBLY/.test(cls)) ocultable(); continue; }   // conjuntos y pernos no son piezas del LISTADO
         const valores = {}, pesos = {}, otros = {}, lista = [];
         (p.properties || []).forEach(ps => (ps.properties || []).forEach(x => {
           const k = nombreProp(x.name); if (!(k in valores)) valores[k] = x.value;
@@ -152,13 +155,14 @@ async function leerPiezasDelModelo() {
         const nombre = PROP_CODIGO.find(n => valores[n] != null && String(valores[n]).trim() !== '');
         if (!nombre) { sinCodigo++; continue; }
         const cod = clave(valores[nombre]);
-        if (IGNORAR_CODIGOS.test(cod)) { referencias++; cc.excluidas++; continue; }   // letreros y accesorios de anclaje, no son piezas
+        if (IGNORAR_CODIGOS.test(cod)) { referencias++; cc.excluidas++; ocultable(); continue; }   // letreros y accesorios de anclaje, no son piezas
         const orden = PROP_ORDEN.map(n => String(valores[n] || '')).join('|');
         if (!muestra) muestra = { cod, lista };
         let kp = PROP_PESO.find(n => pesos[n] > 0), peso = kp ? pesos[kp] : 0;
         if (!kp) { kp = Object.keys(otros).find(n => otros[n] > 0); peso = kp ? otros[kp] : 0; }
         if (kp) usoPeso[kp] = (usoPeso[kp] || 0) + 1; else sinPeso++;
         (piezas[cod] = piezas[cod] || []).push({ modelId: g.modelId, id: p.id, orden: orden, peso: peso });
+        ocultable();
         cc.usadas++;
         total++;
       }
@@ -353,29 +357,28 @@ function marcarLeyenda() {
   });
 }
 
-/* muestra solo las piezas de una fase; pulsar de nuevo vuelve a mostrar todo */
+/* resalta una fase: las demás piezas quedan como "fantasma" (gris claro transparente).
+   No se oculta nada, así el modelo nunca desaparece. Pulsar de nuevo vuelve a los colores normales. */
+const FANTASMA = { r: 200, g: 205, b: 210, a: 35 };
 async function aislar(e, reaplicar) {
   try {
     if (!reaplicar && FILTRO === e) {
       FILTRO = null;
-      await verTodo();
+      for (let j = 0; j < ESTADOS.length; j++) await aplicar(GRUPOS[j], { color: ESTADOS[j].color });
       msg('');
     } else {
       FILTRO = e;
-      const mostrar = {}, ocultar = {};
-      for (const m in GRUPOS[e]) mostrar[m] = new Set(GRUPOS[e][m]);
-      for (const m in TODOS) ocultar[m] = TODOS[m].filter(id => !(mostrar[m] && mostrar[m].has(id)));
-      await aplicar(GRUPOS[e], { visible: true });
-      await aplicar(ocultar, { visible: false });
+      for (let j = 0; j < ESTADOS.length; j++) {
+        if (j === e) continue;
+        try { await aplicar(GRUPOS[j], { color: FANTASMA }); }
+        catch (x) { await aplicar(GRUPOS[j], { color: '#E3E6E8' }); }   // si el visor no acepta transparencia
+      }
+      await aplicar(GRUPOS[e], { color: ESTADOS[e].color });
       const cant = Object.values(GRUPOS[e]).reduce((a, ids) => a + ids.length, 0);
-      msg(cant ? `Mostrando solo: ${ESTADOS[e].nombre} (${fmtN(cant)} piezas).` : `No hay piezas en ${ESTADOS[e].nombre}.`);
+      msg(cant ? `Resaltando: ${ESTADOS[e].nombre} (${fmtN(cant)} piezas).` : `No hay piezas en ${ESTADOS[e].nombre}.`);
     }
     marcarLeyenda();
   } catch (err) { msg('Error: ' + (err.message || err), true); }
-}
-
-async function verTodo() {
-  await aplicar(TODOS, { visible: true });
 }
 
 /* ===================== EVOLUCIÓN SEMANAL ===================== */
@@ -481,7 +484,6 @@ function mostrarDiferencias() {
 async function restablecer() {
   try {
     await API.viewer.setObjectState(undefined, { color: 'reset' });
-    await verTodo();
     FILTRO = null; marcarLeyenda();
     msg('Colores restablecidos.');
   } catch (e) { msg('Error: ' + e, true); }
