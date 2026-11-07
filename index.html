@@ -4,8 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Avance de fabricación</title>
-<!-- versión 2026-11-07d -->
+<!-- versión 2026-11-07e -->
 <script src="https://components.connect.trimble.com/trimble-connect-workspace-api/index.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <style>
   :root{--acero:#27323A;--zinc:#D5DADE;--suave:#5B6870;--amarillo:#F5C400}
   *{box-sizing:border-box}
@@ -39,6 +40,9 @@
   .err{color:#B3261E;font-weight:bold}
   details{margin-top:8px;font-size:12px} summary{cursor:pointer;color:var(--suave)}
   #listaSin,#listaDif,#listaTipos,#listaMuestra{margin-top:4px;line-height:1.5}
+  input[type=text]{width:100%;padding:6px;border:2px solid var(--zinc);border-radius:6px;font:13px Arial}
+  .rep{margin-top:14px;padding-top:10px;border-top:1px solid var(--zinc)}
+  .rep a{display:block;margin-top:6px;font-size:12px;color:var(--acero)}
   #curva{margin-top:6px} #curva svg{width:100%;height:auto;display:block}
 </style>
 </head>
@@ -68,6 +72,14 @@
 <button class="btn prim" id="btnAct" onclick="actualizar()" disabled>Actualizar avance</button>
 <button class="btn sec" onclick="restablecer()">Quitar colores</button>
 
+<div class="rep">
+  <label for="elab">Elaborado por</label>
+  <input type="text" id="elab" placeholder="Nombre y cargo">
+  <button class="btn sec" id="btnRep" onclick="generarReporte()">Generar reporte PDF</button>
+  <a id="abrirRep" href="#" target="_blank" rel="noopener" style="display:none">¿No se descargó? Abrir el reporte en una pestaña nueva</a>
+  <div class="hint">Acomode antes la cámara en Trimble: todas las vistas se toman desde ese ángulo.</div>
+</div>
+
 <details id="detEvo" ontoggle="if (this.open) cargarEvolucion()"><summary>Evolución semanal</summary><div id="curva"></div></details>
 <details id="detSin" style="display:none"><summary id="sumSin"></summary><div id="listaSin"></div></details>
 <details id="detDif" style="display:none"><summary id="sumDif"></summary><div id="listaDif"></div></details>
@@ -84,6 +96,8 @@ const PROP_ORDEN = ['TIPO_DE_TORRE', 'SECCION_TORRE'];       // orden para llena
 const PROP_PESO = ['WEIGHT', 'NETWEIGHT', 'PESO', 'PESONETO', 'GROSSWEIGHT'];   // propiedad de peso en kg, en orden de preferencia
 const EXCLUIR_CLASES = /FASTENER|BOLT|ACCESSORY|WELD|OPENING|ASSEMBLY/;  // pernos, tuercas, arandelas, soldaduras: no se cuentan ni se pintan
 const IGNORAR_CODIGOS = /^(PL|A)\d+$/;   // letreros y texto del nombre de la torre (referencias, no se fabrican)
+const REPORTE = { CLIENTE: 'ANTAMINA', PEDIDO: 'S00216', ELEMENTO: 'Torre TA45-B' };   // datos para el reporte PDF
+const LOGO_URL = 'https://jersonbautista-35.github.io/avance3d/logo.jpg';   // logo de Electrocom en la raíz del repositorio
 const GRIS = '#9AA0A6';
 // Las fases salen de estado.json ("fases"); aquí solo se asigna nombre y color a cada una
 const FASES_CONOCIDAS = [
@@ -109,6 +123,8 @@ const fmtN = n => Math.round(n).toLocaleString('es-PE');
 const fmtT = kg => (kg / 1000).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' t';
 const fmtP = f => (f * 100).toLocaleString('es-PE', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + ' %';
 const fmtV = v => MEDIDA === 'peso' ? fmtT(v) : fmtN(v) + ' pzs';
+
+try { $('elab').value = localStorage.getItem('avance3d_elab') || 'Jerson Bautista – Gerente de Operaciones'; } catch (x) { $('elab').value = 'Jerson Bautista – Gerente de Operaciones'; }
 
 (async function iniciar() {
   if (window.parent === window) { $('sub').textContent = 'Abra esta página como extensión dentro de Trimble Connect.'; return; }
@@ -467,6 +483,190 @@ function dibujarCurva() {
     }).join(', ') + '.';
   }
   $('curva').innerHTML = svg + `<div class="hint">${MEDIDA === 'peso' ? 'Por peso' : 'Por piezas'}, acumulado por fase; un punto por semana (último registro de cada semana).${delta}</div>`;
+}
+
+
+/* ===================== REPORTE PDF ===================== */
+const espera = ms => new Promise(r => setTimeout(r, ms));
+const rgb = h => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
+function cargarImagen(src) {
+  return new Promise((ok, mal) => { const i = new Image(); i.crossOrigin = 'anonymous'; i.onload = () => ok(i); i.onerror = () => mal(new Error('imagen')); i.src = src; });
+}
+async function aJPEG(src, max) {   // reduce y convierte a JPEG para que el PDF no pese demasiado
+  const img = await cargarImagen(src);
+  const k = Math.min(1, max / Math.max(img.width, img.height));
+  const c = document.createElement('canvas'); c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+  const x = c.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height); x.drawImage(img, 0, 0, c.width, c.height);
+  return { data: c.toDataURL('image/jpeg', 0.88), w: c.width, h: c.height };
+}
+async function capturar() {
+  await espera(1500);   // tiempo para que el visor termine de pintar
+  let s = await API.viewer.getSnapshot();
+  if (s && !String(s).startsWith('data:')) s = 'data:image/png;base64,' + s;
+  return aJPEG(s, 2000);
+}
+function ponerImagen(doc, img, x, y, w, h) {
+  const k = Math.min(w / img.w, h / img.h), dw = img.w * k, dh = img.h * k;
+  doc.addImage(img.data, 'JPEG', x + (w - dw) / 2, y + (h - dh) / 2, dw, dh);
+  doc.setDrawColor(213, 218, 222); doc.setLineWidth(0.2); doc.rect(x, y, w, h);
+}
+
+async function generarReporte() {
+  if (!PIEZAS || !DATOS || !RESUMEN) { msg('Primero pulse Actualizar avance.', true); return; }
+  if (!window.jspdf) { msg('No se pudo cargar el generador de PDF. Recargue el panel con Ctrl+F5.', true); return; }
+  const elab = $('elab').value.trim();
+  try { localStorage.setItem('avance3d_elab', elab); } catch (x) {}
+  $('btnRep').disabled = true; $('btnAct').disabled = true; $('abrirRep').style.display = 'none';
+  const filtroPrevio = FILTRO;
+  try {
+    const n = ESTADOS.length - 1, usaPeso = MEDIDA === 'peso';
+    const val = usaPeso ? RESUMEN.kilos : RESUMEN.cuenta;
+    const total = val.reduce((a, b) => a + b, 0) || 1;
+
+    // 1. vistas del modelo
+    if (FILTRO != null) await aislar(FILTRO);   // quita el resaltado
+    msg('Capturando la vista general…');
+    const general = await capturar();
+    const vistas = [];
+    for (let e = n; e >= 0; e--) {
+      if (val[e] / total < 0.01) continue;   // fases con menos de 1 % no llevan vista propia
+      msg('Capturando: ' + ESTADOS[e].nombre + '…');
+      await aislar(e);
+      vistas.push({ e, img: await capturar() });
+    }
+    if (FILTRO != null) await aislar(FILTRO);
+    if (filtroPrevio != null) await aislar(filtroPrevio);
+
+    // 2. evolución semanal y logo
+    msg('Leyendo la evolución semanal…');
+    if (!HISTORIAL) await cargarEvolucion();
+    let logo = null;
+    try { logo = await aJPEG(LOGO_URL, 600); } catch (x) {}
+
+    // 3. armado del PDF (A4 horizontal, mm)
+    msg('Armando el PDF…');
+    const doc = new window.jspdf.jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+    const W = 297, M = 12, fecha = new Date();
+    const fechaTxt = fecha.toLocaleDateString('es-PE', { day: '2-digit', month: '2-digit', year: 'numeric' });
+    const encabezado = (titulo) => {
+      if (logo) { const h = 13, w = Math.min(48, logo.w / logo.h * h); doc.addImage(logo.data, 'JPEG', M, 7, w, h); }
+      else { doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.setTextColor(39, 50, 58); doc.text('ELECTROCOM INGENIEROS S.A.C.', M, 15); }
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(13); doc.setTextColor(39, 50, 58);
+      doc.text(titulo, W - M, 12, { align: 'right' });
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(91, 104, 112);
+      doc.text(`${REPORTE.CLIENTE} · Pedido ${REPORTE.PEDIDO} · ${REPORTE.ELEMENTO}`, W - M, 18, { align: 'right' });
+      doc.setDrawColor(245, 196, 0); doc.setLineWidth(0.8); doc.line(M, 23, W - M, 23);
+    };
+
+    // página 1: datos, resumen y vista general
+    encabezado('Reporte de avance de fabricación');
+    let y = 32;
+    const dato = (k, v) => { doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(91, 104, 112); doc.text(k, M, y);
+      doc.setFont('helvetica', 'bold'); doc.setTextColor(28, 35, 40); doc.text(String(v), M + 32, y); y += 6; };
+    dato('Cliente', REPORTE.CLIENTE);
+    dato('Pedido', REPORTE.PEDIDO);
+    dato('Elemento', REPORTE.ELEMENTO);
+    dato('Registro al', DATOS.actualizado);
+    dato('Emitido', fechaTxt);
+    dato('Elaborado por', elab || '—');
+    dato('Total', `${fmtN(RESUMEN.cuenta.reduce((a, b) => a + b, 0))} piezas` + (RESUMEN.kilos.some(k => k) ? ` · ${fmtT(RESUMEN.kilos.reduce((a, b) => a + b, 0))}` : ''));
+
+    y += 4;
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(10); doc.setTextColor(39, 50, 58);
+    doc.text('Estado actual ' + (usaPeso ? '(por peso)' : '(por piezas)'), M, y); y += 5;
+    for (let e = n; e >= 0; e--) {
+      doc.setFillColor(...rgb(ESTADOS[e].color)); doc.rect(M, y - 3.2, 4, 4, 'F');
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(28, 35, 40);
+      doc.text(ESTADOS[e].nombre, M + 6, y);
+      doc.text(fmtV(val[e]), M + 80, y, { align: 'right' });
+      doc.setTextColor(91, 104, 112); doc.text(fmtP(val[e] / total), M + 100, y, { align: 'right' });
+      y += 6;
+    }
+    y += 3;
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(10); doc.setTextColor(39, 50, 58);
+    doc.text('Avance acumulado', M, y); y += 5;
+    let s = 0; const cum = [];
+    for (let e = n; e >= 1; e--) { s += val[e]; cum[e] = s; }
+    for (let e = 1; e <= n; e++) {
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(28, 35, 40);
+      doc.text(ESTADOS[e].nombre + (e < n ? ' o más' : ''), M, y);
+      doc.setFont('helvetica', 'bold'); doc.text(fmtP(cum[e] / total), M + 100, y, { align: 'right' });
+      doc.setFillColor(227, 230, 232); doc.rect(M, y + 1.2, 100, 1.6, 'F');
+      doc.setFillColor(...rgb(ESTADOS[e].color)); doc.rect(M, y + 1.2, 100 * cum[e] / total, 1.6, 'F');
+      y += 8;
+    }
+    ponerImagen(doc, general, 122, 30, W - M - 122, 165);
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(91, 104, 112);
+    doc.text('Vista general: cada pieza pintada según su fase más avanzada.', 122, 199);
+
+    // páginas de vistas por fase, dos por página
+    for (let i = 0; i < vistas.length; i += 2) {
+      doc.addPage(); encabezado('Avance por fase');
+      vistas.slice(i, i + 2).forEach((v, j) => {
+        const x = M + j * 140, st = ESTADOS[v.e];
+        doc.setFillColor(...rgb(st.color)); doc.rect(x, 28, 5, 5, 'F');
+        doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.setTextColor(28, 35, 40);
+        doc.text(st.nombre, x + 7, 32);
+        doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(91, 104, 112);
+        doc.text(`${fmtV(val[v.e])} · ${fmtP(val[v.e] / total)}`, x + 133, 32, { align: 'right' });
+        ponerImagen(doc, v.img, x, 36, 133, 158);
+      });
+    }
+
+    // página de evolución semanal
+    if (HISTORIAL && HISTORIAL.length) {
+      doc.addPage(); encabezado('Evolución semanal');
+      const serie = HISTORIAL.map(p => fraccionPorFase(p.datos));
+      const gx = M + 12, gy = 32, gw = 170, gh = 120;
+      const X = i => serie.length === 1 ? gx + gw / 2 : gx + i * gw / (serie.length - 1);
+      const Y = f => gy + (1 - f) * gh;
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(91, 104, 112);
+      for (const g of [0, 0.25, 0.5, 0.75, 1]) {
+        doc.setDrawColor(227, 230, 232); doc.setLineWidth(0.2); doc.line(gx, Y(g), gx + gw, Y(g));
+        doc.text(g * 100 + ' %', gx - 2, Y(g) + 1, { align: 'right' });
+      }
+      const fc = d => d.toLocaleDateString('es-PE', { day: '2-digit', month: '2-digit' });
+      HISTORIAL.forEach((p, i) => doc.text(fc(p.fecha), X(i), gy + gh + 5, { align: 'center' }));
+      for (let j = 0; j < n; j++) {
+        doc.setDrawColor(...rgb(ESTADOS[j + 1].color)); doc.setFillColor(...rgb(ESTADOS[j + 1].color)); doc.setLineWidth(0.7);
+        for (let i = 1; i < serie.length; i++) doc.line(X(i - 1), Y(serie[i - 1][j]), X(i), Y(serie[i][j]));
+        serie.forEach((sv, i) => doc.circle(X(i), Y(sv[j]), 0.9, 'F'));
+      }
+      // leyenda y tabla
+      let ty = 36; const tx = 194;
+      const corto = s => ({ 'Corte y punzonado': 'Corte', 'Soldadura': 'Soldad.', 'Galvanizado': 'Galvan.', 'Empaquetado': 'Empaq.', 'Despachado': 'Despach.' })[s] || s.slice(0, 8);
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(8.5); doc.setTextColor(28, 35, 40);
+      doc.text('Semana', tx, ty); ESTADOS.slice(1).forEach((st, j) => doc.text(corto(st.nombre), tx + 36 + j * 18, ty, { align: 'right' }));
+      ty += 5; doc.setFont('helvetica', 'normal');
+      HISTORIAL.slice(-14).forEach((p, k) => {
+        const sv = serie[serie.length - Math.min(14, serie.length) + k];
+        doc.setTextColor(91, 104, 112); doc.text(fc(p.fecha), tx, ty);
+        doc.setTextColor(28, 35, 40); sv.forEach((f, j) => doc.text(fmtP(f), tx + 36 + j * 18, ty, { align: 'right' }));
+        ty += 5;
+      });
+      ESTADOS.slice(1).forEach((st, j) => { doc.setFillColor(...rgb(st.color)); doc.rect(gx + j * 52, gy + gh + 10, 4, 4, 'F');
+        doc.setTextColor(28, 35, 40); doc.text(st.nombre + (j < n - 1 ? ' o más' : ''), gx + j * 52 + 6, gy + gh + 13.2); });
+      doc.setTextColor(91, 104, 112);
+      doc.text((usaPeso ? 'Por peso' : 'Por piezas') + ', acumulado por fase. Un punto por semana: el último registro de cada semana.', gx, gy + gh + 22);
+    }
+
+    // pie de página
+    const total_p = doc.getNumberOfPages();
+    for (let p = 1; p <= total_p; p++) {
+      doc.setPage(p);
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(91, 104, 112);
+      doc.text('Electrocom Ingenieros S.A.C.' + (elab ? ' · Elaborado por: ' + elab : '') + ' · Emitido: ' + fechaTxt, M, 205);
+      doc.text(`Página ${p} de ${total_p}`, W - M, 205, { align: 'right' });
+    }
+
+    const nombre = `Avance_${REPORTE.PEDIDO}_${REPORTE.ELEMENTO}_${fecha.toISOString().slice(0, 10)}`.replace(/[^A-Za-z0-9_\-]+/g, '_') + '.pdf';
+    $('abrirRep').href = doc.output('bloburl');
+    $('abrirRep').style.display = 'block';
+    doc.save(nombre);
+    msg('Reporte generado: ' + nombre);
+  } catch (e) {
+    msg('No se pudo generar el reporte: ' + (e.message || e), true);
+  } finally { $('btnRep').disabled = false; $('btnAct').disabled = false; }
 }
 
 /* compara cuántas veces aparece cada código en el modelo vs. la CANT TOT del LISTADO */
