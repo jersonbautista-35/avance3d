@@ -95,7 +95,7 @@ const FASES_CONOCIDAS = [
 const COLORES_EXTRA = ['#00897B', '#C2185B', '#6D4C41'];
 /* ========================================================= */
 
-let API = null, PIEZAS = null, DATOS = null;   // PIEZAS: {codigo: [{modelId, id, orden, peso}]}
+let API = null, PIEZAS = null, DATOS = null, TODOS = {};   // TODOS: modelId -> ids que se pueden ocultar   // PIEZAS: {codigo: [{modelId, id, orden, peso}]}
 let ESTADOS = [], GRUPOS = [], RESUMEN = null, FILTRO = null, MEDIDA = 'peso', HISTORIAL = null, PESO_MODELO = null;
 const $ = id => document.getElementById(id);
 const msg = (t, e) => { $('msg').textContent = t; $('msg').className = 'msg' + (e ? ' err' : ''); };
@@ -131,12 +131,14 @@ async function leerPiezasDelModelo() {
   const clases = {};   // clase IFC -> { usadas, excluidas }
   const usoPeso = {};  // propiedad de peso usada -> cuántas piezas
   let referencias = 0, muestra = null;
+  const todos = {};
   for (const g of grupos) {
     const ids = (g.objects || []).map(o => o.id);
     for (let i = 0; i < ids.length; i += 1000) {
       const props = await API.viewer.getObjectProperties(g.modelId, ids.slice(i, i + 1000));
       for (const p of props) {
         const cls = norm(p.class) || '(SIN CLASE)';
+        if (!/ASSEMBLY/.test(cls)) (todos[g.modelId] = todos[g.modelId] || []).push(p.id);   // ocultar un conjunto ocultaría sus piezas
         const cc = clases[cls] = clases[cls] || { usadas: 0, excluidas: 0 };
         if (EXCLUIR_CLASES.test(cls)) { cc.excluidas++; continue; }   // conjuntos y pernos no son piezas del LISTADO
         const valores = {}, pesos = {}, otros = {}, lista = [];
@@ -165,6 +167,7 @@ async function leerPiezasDelModelo() {
   Object.values(piezas).forEach(arr => arr.sort((a, b) => a.orden.localeCompare(b.orden) || a.id - b.id));
   mostrarTipos(clases, referencias);
   mostrarMuestra(muestra);
+  TODOS = todos;
   return { piezas, total, sinCodigo, usoPeso, sinPeso };
 }
 
@@ -359,8 +362,11 @@ async function aislar(e, reaplicar) {
       msg('');
     } else {
       FILTRO = e;
-      await API.viewer.setObjectState(undefined, { visible: false });
+      const mostrar = {}, ocultar = {};
+      for (const m in GRUPOS[e]) mostrar[m] = new Set(GRUPOS[e][m]);
+      for (const m in TODOS) ocultar[m] = TODOS[m].filter(id => !(mostrar[m] && mostrar[m].has(id)));
       await aplicar(GRUPOS[e], { visible: true });
+      await aplicar(ocultar, { visible: false });
       const cant = Object.values(GRUPOS[e]).reduce((a, ids) => a + ids.length, 0);
       msg(cant ? `Mostrando solo: ${ESTADOS[e].nombre} (${fmtN(cant)} piezas).` : `No hay piezas en ${ESTADOS[e].nombre}.`);
     }
@@ -369,8 +375,7 @@ async function aislar(e, reaplicar) {
 }
 
 async function verTodo() {
-  try { await API.viewer.setObjectState(undefined, { visible: 'reset' }); }
-  catch (e) { await API.viewer.setObjectState(undefined, { visible: true }); }
+  await aplicar(TODOS, { visible: true });
 }
 
 /* ===================== EVOLUCIÓN SEMANAL ===================== */
