@@ -37,7 +37,7 @@
   .msg{margin-top:10px;font-size:12px;color:var(--suave);white-space:pre-wrap}
   .err{color:#B3261E;font-weight:bold}
   details{margin-top:8px;font-size:12px} summary{cursor:pointer;color:var(--suave)}
-  #listaSin,#listaDif,#listaTipos{margin-top:4px;line-height:1.5}
+  #listaSin,#listaDif,#listaTipos,#listaMuestra{margin-top:4px;line-height:1.5}
   #curva{margin-top:6px} #curva svg{width:100%;height:auto;display:block}
 </style>
 </head>
@@ -70,6 +70,7 @@
 <details id="detEvo" ontoggle="if (this.open) cargarEvolucion()"><summary>Evolución semanal</summary><div id="curva"></div></details>
 <details id="detSin" style="display:none"><summary id="sumSin"></summary><div id="listaSin"></div></details>
 <details id="detDif" style="display:none"><summary id="sumDif"></summary><div id="listaDif"></div></details>
+<details id="detMuestra" style="display:none"><summary id="sumMuestra"></summary><div id="listaMuestra"></div></details>
 <details id="detTipos" style="display:none"><summary id="sumTipos"></summary><div id="listaTipos"></div></details>
 <div class="msg" id="msg"></div>
 
@@ -129,7 +130,7 @@ async function leerPiezasDelModelo() {
   const piezas = {}; let total = 0, sinCodigo = 0, sinPeso = 0;
   const clases = {};   // clase IFC -> { usadas, excluidas }
   const usoPeso = {};  // propiedad de peso usada -> cuántas piezas
-  let referencias = 0;
+  let referencias = 0, muestra = null;
   for (const g of grupos) {
     const ids = (g.objects || []).map(o => o.id);
     for (let i = 0; i < ids.length; i += 1000) {
@@ -138,19 +139,24 @@ async function leerPiezasDelModelo() {
         const cls = norm(p.class) || '(SIN CLASE)';
         const cc = clases[cls] = clases[cls] || { usadas: 0, excluidas: 0 };
         if (EXCLUIR_CLASES.test(cls)) { cc.excluidas++; continue; }   // conjuntos y pernos no son piezas del LISTADO
-        const valores = {}, pesos = {};
+        const valores = {}, pesos = {}, otros = {}, lista = [];
         (p.properties || []).forEach(ps => (ps.properties || []).forEach(x => {
           const k = nombreProp(x.name); if (!(k in valores)) valores[k] = x.value;
-          const kp = claveProp(x.name); if (PROP_PESO.includes(kp) && !(kp in pesos)) pesos[kp] = num(x.value);
+          const kp = claveProp(x.name);
+          if (PROP_PESO.includes(kp)) { if (!(kp in pesos)) pesos[kp] = num(x.value); }
+          else if (/WEIGHT|PESO|MASS|MASA/.test(kp) && !(kp in otros)) otros[kp] = num(x.value);   // otros nombres de peso
+          if (!muestra) lista.push(`${ps.name || '(sin grupo)'} › ${x.name} = ${x.value}`);
         }));
         const nombre = PROP_CODIGO.find(n => valores[n] != null && String(valores[n]).trim() !== '');
         if (!nombre) { sinCodigo++; continue; }
         const cod = clave(valores[nombre]);
         if (IGNORAR_CODIGOS.test(cod)) { referencias++; cc.excluidas++; continue; }   // letreros y accesorios de anclaje, no son piezas
         const orden = PROP_ORDEN.map(n => String(valores[n] || '')).join('|');
-        const kp = PROP_PESO.find(n => pesos[n] > 0);
+        if (!muestra) muestra = { cod, lista };
+        let kp = PROP_PESO.find(n => pesos[n] > 0), peso = kp ? pesos[kp] : 0;
+        if (!kp) { kp = Object.keys(otros).find(n => otros[n] > 0); peso = kp ? otros[kp] : 0; }
         if (kp) usoPeso[kp] = (usoPeso[kp] || 0) + 1; else sinPeso++;
-        (piezas[cod] = piezas[cod] || []).push({ modelId: g.modelId, id: p.id, orden: orden, peso: kp ? pesos[kp] : 0 });
+        (piezas[cod] = piezas[cod] || []).push({ modelId: g.modelId, id: p.id, orden: orden, peso: peso });
         cc.usadas++;
         total++;
       }
@@ -158,6 +164,7 @@ async function leerPiezasDelModelo() {
   }
   Object.values(piezas).forEach(arr => arr.sort((a, b) => a.orden.localeCompare(b.orden) || a.id - b.id));
   mostrarTipos(clases, referencias);
+  mostrarMuestra(muestra);
   return { piezas, total, sinCodigo, usoPeso, sinPeso };
 }
 
@@ -168,6 +175,14 @@ function mostrarTipos(clases, referencias) {
   $('detTipos').style.display = 'block';
   $('sumTipos').textContent = 'Tipos de objeto del modelo (' + excl.toLocaleString('es-PE') + ' excluidos)';
   $('listaTipos').textContent = (referencias ? `Códigos ignorados (letreros y accesorios de anclaje): ${referencias} · ` : '') + filas.map(([k, v]) => `${k}: ${v.usadas} contadas` + (v.excluidas ? `, ${v.excluidas} excluidas` : '')).join(' · ');
+}
+
+/* lista las propiedades de una pieza de ejemplo, para ubicar el peso u otros datos */
+function mostrarMuestra(m) {
+  $('detMuestra').style.display = m ? 'block' : 'none';
+  if (!m) return;
+  $('sumMuestra').textContent = 'Propiedades de una pieza de ejemplo (' + m.cod + ')';
+  $('listaMuestra').innerHTML = m.lista.map(s => `<div>${s.replace(/[<&]/g, c => c === '<' ? '&lt;' : '&amp;')}</div>`).join('');
 }
 
 /* normaliza los códigos del registro igual que los del modelo */
@@ -317,7 +332,7 @@ function mostrarResumen() {
       const usados = Object.entries(PESO_MODELO.uso).map(([k, v]) => `${k} (${fmtN(v)})`).join(', ');
       fuente = 'Peso según el modelo: ' + usados + '.' + (PESO_MODELO.sinPeso ? ` ${fmtN(PESO_MODELO.sinPeso)} piezas sin peso, no suman.` : '');
     }
-  } else if (!kgTotal) fuente = 'El modelo no trae peso (' + PROP_PESO.join(' / ') + '); solo se puede medir por piezas.';
+  } else if (!kgTotal) fuente = 'El modelo no trae peso (' + PROP_PESO.join(' / ') + '); solo se puede medir por piezas. Revise abajo «Propiedades de una pieza de ejemplo».';
   $('fuente').textContent = fuente;
 
   if (RESUMEN.sinDatos.length) {
