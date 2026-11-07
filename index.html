@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Avance de fabricación</title>
-<!-- versión 2026-11-07c -->
+<!-- versión 2026-11-07d -->
 <script src="https://components.connect.trimble.com/trimble-connect-workspace-api/index.js"></script>
 <style>
   :root{--acero:#27323A;--zinc:#D5DADE;--suave:#5B6870;--amarillo:#F5C400}
@@ -359,20 +359,22 @@ function marcarLeyenda() {
 
 /* resalta una fase: las demás piezas quedan como "fantasma" (gris claro transparente).
    No se oculta nada, así el modelo nunca desaparece. Pulsar de nuevo vuelve a los colores normales. */
-const FANTASMA = { r: 200, g: 205, b: 210, a: 35 };
+const FANTASMA = { r: 225, g: 228, b: 231, a: 12 };   // casi transparente
 async function aislar(e, reaplicar) {
   try {
     if (!reaplicar && FILTRO === e) {
       FILTRO = null;
+      await API.viewer.setObjectState(undefined, { color: 'reset' });   // pernos y soldaduras vuelven a su color
       for (let j = 0; j < ESTADOS.length; j++) await aplicar(GRUPOS[j], { color: ESTADOS[j].color });
       msg('');
     } else {
       FILTRO = e;
-      for (let j = 0; j < ESTADOS.length; j++) {
-        if (j === e) continue;
-        try { await aplicar(GRUPOS[j], { color: FANTASMA }); }
-        catch (x) { await aplicar(GRUPOS[j], { color: '#E3E6E8' }); }   // si el visor no acepta transparencia
-      }
+      // todo lo demás (otras fases, pernos, soldaduras, letreros) queda casi transparente
+      const elegidas = {}, resto = {};
+      for (const m in GRUPOS[e]) elegidas[m] = new Set(GRUPOS[e][m]);
+      for (const m in TODOS) resto[m] = TODOS[m].filter(id => !(elegidas[m] && elegidas[m].has(id)));
+      try { await aplicar(resto, { color: FANTASMA }); }
+      catch (x) { await aplicar(resto, { color: '#EDEFF1' }); }   // si el visor no acepta transparencia
       await aplicar(GRUPOS[e], { color: ESTADOS[e].color });
       const cant = Object.values(GRUPOS[e]).reduce((a, ids) => a + ids.length, 0);
       msg(cant ? `Resaltando: ${ESTADOS[e].nombre} (${fmtN(cant)} piezas).` : `No hay piezas en ${ESTADOS[e].nombre}.`);
