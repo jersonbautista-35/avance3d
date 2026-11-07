@@ -14,28 +14,49 @@
   .btn{width:100%;border:0;border-radius:6px;padding:9px;font:bold 13px Arial;cursor:pointer;margin-top:6px}
   .prim{background:var(--amarillo);color:var(--acero)} .sec{background:#fff;border:2px solid var(--zinc);color:var(--acero)}
   .btn:disabled{opacity:.5;cursor:default}
-  .ley{margin:12px 0;border:1px solid var(--zinc);border-radius:6px}
-  .ley div{display:flex;align-items:center;gap:8px;padding:7px 10px;border-bottom:1px solid #EEF0F2}
-  .ley div:last-child{border-bottom:0}
+  .seg{display:flex;border:2px solid var(--zinc);border-radius:6px;overflow:hidden;margin-top:4px}
+  .seg button{flex:1;border:0;background:#fff;padding:6px;font:13px Arial;cursor:pointer;color:var(--acero)}
+  .seg button[aria-pressed=true]{background:var(--acero);color:#fff;font-weight:bold}
+  .seg button:disabled{color:#AAB1B6;cursor:default}
+  .barra{display:flex;height:14px;border-radius:7px;overflow:hidden;background:#E3E6E8;margin:10px 0 4px}
+  .acum{font-size:12px}
+  .acum div{display:flex;justify-content:space-between;padding:2px 0;border-bottom:1px dotted #E3E6E8}
+  .acum span{color:var(--suave)}
+  .ley{margin:12px 0 2px;border:1px solid var(--zinc);border-radius:6px;overflow:hidden}
+  .ley button{display:flex;align-items:center;gap:8px;width:100%;padding:7px 10px;border:0;border-bottom:1px solid #EEF0F2;background:#fff;font:13px Arial;color:inherit;text-align:left;cursor:pointer}
+  .ley button:last-child{border-bottom:0}
+  .ley button:hover{background:#F6F7F8}
+  .ley button.activa{background:#FFF7D1;box-shadow:inset 4px 0 0 var(--acero)}
+  .ley b{margin-left:auto;white-space:nowrap}
+  .ley small{color:var(--suave);min-width:44px;text-align:right}
   .sw{width:16px;height:16px;border-radius:3px;flex:none}
-  .ley b{margin-left:auto}
-  .barra{display:flex;height:14px;border-radius:7px;overflow:hidden;background:#E3E6E8;margin:6px 0 2px}
-  label{display:block;font-size:12px;color:var(--suave);margin-top:8px}
+  .hint{font-size:11px;color:var(--suave);margin-top:4px}
+  button:focus-visible,select:focus-visible,summary:focus-visible{outline:2px solid var(--acero);outline-offset:2px}
+  label{display:block;font-size:12px;color:var(--suave);margin-top:10px}
   select{width:100%;padding:6px;border:2px solid var(--zinc);border-radius:6px;font:13px Arial}
   .msg{margin-top:10px;font-size:12px;color:var(--suave);white-space:pre-wrap}
   .err{color:#B3261E;font-weight:bold}
   details{margin-top:8px;font-size:12px} summary{cursor:pointer;color:var(--suave)}
   #listaSin,#listaDif,#listaTipos{margin-top:4px;line-height:1.5}
+  #curva{margin-top:6px} #curva svg{width:100%;height:auto;display:block}
 </style>
 </head>
 <body>
 <h1>Avance de fabricación</h1>
 <div class="sub" id="sub">Conectando con el visor…</div>
 
+<label>Medir el avance por</label>
+<div class="seg" role="group" aria-label="Medir el avance por">
+  <button id="mPeso" aria-pressed="true" onclick="setMedida('peso')">Peso (t)</button>
+  <button id="mPiezas" aria-pressed="false" onclick="setMedida('piezas')">Piezas</button>
+</div>
+
 <div class="barra" id="barra"></div>
-<div class="sub" id="pct"></div>
+<div class="acum" id="acum"></div>
+<div class="hint" id="fuente"></div>
 
 <div class="ley" id="ley"></div>
+<div class="hint" id="leyHint" style="display:none">Pulse una fase para ver solo esas piezas. Púlsela de nuevo para ver todo.</div>
 
 <label for="modo">Cómo pintar las marcas repetidas</label>
 <select id="modo" onchange="pintar()">
@@ -46,6 +67,7 @@
 <button class="btn prim" id="btnAct" onclick="actualizar()" disabled>Actualizar avance</button>
 <button class="btn sec" onclick="restablecer()">Quitar colores</button>
 
+<details id="detEvo" ontoggle="if (this.open) cargarEvolucion()"><summary>Evolución semanal</summary><div id="curva"></div></details>
 <details id="detSin" style="display:none"><summary id="sumSin"></summary><div id="listaSin"></div></details>
 <details id="detDif" style="display:none"><summary id="sumDif"></summary><div id="listaDif"></div></details>
 <details id="detTipos" style="display:none"><summary id="sumTipos"></summary><div id="listaTipos"></div></details>
@@ -54,21 +76,37 @@
 <script>
 /* ===================== CONFIGURACIÓN ===================== */
 const API_URL = 'estado.json';                               // publicado por Apps Script en este mismo repositorio
+const REPO = 'jersonbautista-35/avance3d';                   // de aquí se lee el historial para la evolución semanal
 const PROP_CODIGO = ['CODIGO', 'ASSEMBLY_POS', 'PART_POS'];  // propiedad con la marca de la pieza
 const PROP_ORDEN = ['TIPO_DE_TORRE', 'SECCION_TORRE', 'CONJ_ESTRUCTURAL'];       // orden para llenar torre por torre
+const PROP_PESO = ['WEIGHT', 'NETWEIGHT', 'PESO', 'PESONETO', 'GROSSWEIGHT'];   // propiedad de peso en kg, en orden de preferencia
 const EXCLUIR_CLASES = /FASTENER|BOLT|ACCESSORY|WELD|OPENING|ASSEMBLY/;  // pernos, tuercas, arandelas, soldaduras: no se cuentan ni se pintan
 const IGNORAR_CODIGOS = /^(PL|A)\d+$|^\d+X+$/;   // PL../A..: letreros y textos; 2X, 3XX..: tuercas/arandelas de anclaje (no van en el LISTADO)
-const COLORES = { gris: '#9AA0A6', amarillo: '#F5C400', azul: '#1E6FD9', verde: '#2E9E44' };
-const NOMBRES = { gris: 'Sin iniciar', amarillo: 'Corte y punzonado', azul: 'Galvanizado', verde: 'Despachado' };
+const GRIS = '#9AA0A6';
+// Las fases salen de estado.json ("fases"); aquí solo se asigna nombre y color a cada una
+const FASES_CONOCIDAS = [
+  { patron: /CORTE|PERFOR|PUNZON/, nombre: 'Corte y punzonado', color: '#F5C400' },
+  { patron: /SOLDA/,               nombre: 'Soldadura',         color: '#E8711A' },
+  { patron: /GALVA/,               nombre: 'Galvanizado',       color: '#1E6FD9' },
+  { patron: /EMPAQ|EMBAL/,         nombre: 'Empaquetado',       color: '#8E44AD' },
+  { patron: /DESPA/,               nombre: 'Despachado',        color: '#2E9E44' },
+];
+const COLORES_EXTRA = ['#00897B', '#C2185B', '#6D4C41'];
 /* ========================================================= */
 
-let API = null, PIEZAS = null, DATOS = null;   // PIEZAS: {codigo: [{modelId, id, orden}]}
+let API = null, PIEZAS = null, DATOS = null;   // PIEZAS: {codigo: [{modelId, id, orden, peso}]}
+let ESTADOS = [], GRUPOS = [], RESUMEN = null, FILTRO = null, MEDIDA = 'peso', HISTORIAL = null, PESO_MODELO = null;
 const $ = id => document.getElementById(id);
 const msg = (t, e) => { $('msg').textContent = t; $('msg').className = 'msg' + (e ? ' err' : ''); };
 const norm = s => String(s == null ? '' : s).trim().toUpperCase();
-// RD012 = RD12, RB006 = RB6; también ignora guiones y espacios
 const clave = s => norm(s).replace(/[^A-Z0-9#]/g, '').replace(/^(\d+)(R[BCD])$/, '$2$1').replace(/^([A-Z]*)0+(?=\d)/, '$1');   // 014 = 14, RD012 = RD12, 10RB = RB10, #003 se conserva
 const nombreProp = s => norm(s).replace(/^\d+\s*[.)\-]\s*/, '');   // "2. CODIGO" = CODIGO
+const claveProp = s => norm(s).replace(/[^A-Z]/g, '');   // "Net weight" = NETWEIGHT
+const num = v => { if (typeof v === 'number') return v; const m = String(v == null ? '' : v).match(/-?\d+(?:[.,]\d+)?/); return m ? parseFloat(m[0].replace(',', '.')) : NaN; };
+const fmtN = n => Math.round(n).toLocaleString('es-PE');
+const fmtT = kg => (kg / 1000).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' t';
+const fmtP = f => (f * 100).toLocaleString('es-PE', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + ' %';
+const fmtV = v => MEDIDA === 'peso' ? fmtT(v) : fmtN(v) + ' pzs';
 
 (async function iniciar() {
   if (window.parent === window) { $('sub').textContent = 'Abra esta página como extensión dentro de Trimble Connect.'; return; }
@@ -88,8 +126,9 @@ const nombreProp = s => norm(s).replace(/^\d+\s*[.)\-]\s*/, '');   // "2. CODIGO
 
 async function leerPiezasDelModelo() {
   const grupos = await API.viewer.getObjects();
-  const piezas = {}; let total = 0, sinCodigo = 0;
+  const piezas = {}; let total = 0, sinCodigo = 0, sinPeso = 0;
   const clases = {};   // clase IFC -> { usadas, excluidas }
+  const usoPeso = {};  // propiedad de peso usada -> cuántas piezas
   let referencias = 0;
   for (const g of grupos) {
     const ids = (g.objects || []).map(o => o.id);
@@ -99,14 +138,19 @@ async function leerPiezasDelModelo() {
         const cls = norm(p.class) || '(SIN CLASE)';
         const cc = clases[cls] = clases[cls] || { usadas: 0, excluidas: 0 };
         if (EXCLUIR_CLASES.test(cls)) { cc.excluidas++; continue; }   // conjuntos y pernos no son piezas del LISTADO
-        const valores = {};
-        (p.properties || []).forEach(ps => (ps.properties || []).forEach(x => { const k = nombreProp(x.name); if (!(k in valores)) valores[k] = x.value; }));
+        const valores = {}, pesos = {};
+        (p.properties || []).forEach(ps => (ps.properties || []).forEach(x => {
+          const k = nombreProp(x.name); if (!(k in valores)) valores[k] = x.value;
+          const kp = claveProp(x.name); if (PROP_PESO.includes(kp) && !(kp in pesos)) pesos[kp] = num(x.value);
+        }));
         const nombre = PROP_CODIGO.find(n => valores[n] != null && String(valores[n]).trim() !== '');
         if (!nombre) { sinCodigo++; continue; }
         const cod = clave(valores[nombre]);
         if (IGNORAR_CODIGOS.test(cod)) { referencias++; cc.excluidas++; continue; }   // letreros y accesorios de anclaje, no son piezas
         const orden = PROP_ORDEN.map(n => String(valores[n] || '')).join('|');
-        (piezas[cod] = piezas[cod] || []).push({ modelId: g.modelId, id: p.id, orden: orden });
+        const kp = PROP_PESO.find(n => pesos[n] > 0);
+        if (kp) usoPeso[kp] = (usoPeso[kp] || 0) + 1; else sinPeso++;
+        (piezas[cod] = piezas[cod] || []).push({ modelId: g.modelId, id: p.id, orden: orden, peso: kp ? pesos[kp] : 0 });
         cc.usadas++;
         total++;
       }
@@ -114,7 +158,7 @@ async function leerPiezasDelModelo() {
   }
   Object.values(piezas).forEach(arr => arr.sort((a, b) => a.orden.localeCompare(b.orden) || a.id - b.id));
   mostrarTipos(clases, referencias);
-  return { piezas, total, sinCodigo };
+  return { piezas, total, sinCodigo, usoPeso, sinPeso };
 }
 
 /* muestra qué tipos de objeto IFC se leyeron y cuáles se excluyeron */
@@ -126,13 +170,28 @@ function mostrarTipos(clases, referencias) {
   $('listaTipos').textContent = (referencias ? `Códigos ignorados (letreros y accesorios de anclaje): ${referencias} · ` : '') + filas.map(([k, v]) => `${k}: ${v.usadas} contadas` + (v.excluidas ? `, ${v.excluidas} excluidas` : '')).join(' · ');
 }
 
+/* normaliza los códigos del registro igual que los del modelo */
+function normalizarDatos(d) {
+  d.piezas = Object.fromEntries(Object.entries(d.piezas || {}).map(([k, v]) => [clave(k), v]));
+  if (d.pesos) d.pesos = Object.fromEntries(Object.entries(d.pesos).map(([k, v]) => [clave(k), num(v)]));
+  return d;
+}
+
 async function leerDatos() {
   const r = await fetch(API_URL + '?t=' + Date.now(), { cache: 'no-store' });
   if (!r.ok) throw new Error('No se pudo leer ' + API_URL + ' (HTTP ' + r.status + ')');
-  const d = await r.json();
-  d.piezas = Object.fromEntries(Object.entries(d.piezas || {}).map(([k, v]) => [clave(k), v]));
-  return d;
+  return normalizarDatos(await r.json());
 }
+
+/* nombre y color de cada fase del registro */
+function describirFase(f, i) {
+  const k = FASES_CONOCIDAS.find(x => x.patron.test(norm(f)));
+  const s = String(f).trim();
+  return { nombre: k ? k.nombre : s.charAt(0).toUpperCase() + s.slice(1).toLowerCase(), color: k ? k.color : COLORES_EXTRA[i % COLORES_EXTRA.length] };
+}
+
+/* peso unitario: el del LISTADO si estado.json lo trae ("pesos"), si no el del modelo */
+const pesoDe = (cod, o) => (DATOS && DATOS.pesos && DATOS.pesos[cod] > 0) ? DATOS.pesos[cod] : o.peso;
 
 async function actualizar() {
   $('btnAct').disabled = true;
@@ -142,73 +201,247 @@ async function actualizar() {
       const r = await leerPiezasDelModelo();
       if (!r.total) { msg('No se encontraron piezas con la propiedad ' + PROP_CODIGO.join(' / ') + '. ¿Está cargado el modelo?', true); return; }
       PIEZAS = r.piezas;
+      PESO_MODELO = { uso: r.usoPeso, sinPeso: r.sinPeso, total: r.total };
     }
     msg('Leyendo el avance del registro…');
     DATOS = await leerDatos();
+    ESTADOS = [{ nombre: 'Sin iniciar', color: GRIS }].concat((DATOS.fases || []).map(describirFase));
     await pintar();
     mostrarDiferencias();
+    HISTORIAL = null;
+    if ($('detEvo').open) cargarEvolucion();
   } catch (e) { msg('Error: ' + (e.message || e), true); }
   finally { $('btnAct').disabled = false; }
 }
 
-/* reparte las M piezas de una marca entre los 4 colores */
-function repartir(M, d, modo) {
-  const [tot, c0, g0, v0] = d;
-  if (!tot) return { gris: M, amarillo: 0, azul: 0, verde: 0 };
-  const v = Math.min(v0, tot), g = Math.min(Math.max(g0, v), tot), c = Math.min(Math.max(c0, g), tot);
+/* lleva el registro [total, fase1, fase2, …] a cantidades acumuladas coherentes:
+   una pieza despachada también pasó por las fases anteriores */
+function acumulado(d, n) {
+  const tot = +d[0] || 0, x = new Array(n).fill(0);
+  let sig = 0;
+  for (let i = n - 1; i >= 0; i--) { x[i] = Math.min(Math.max(+d[i + 1] || 0, sig), tot); sig = x[i]; }
+  return { tot, x };
+}
+
+/* reparte las M piezas de una marca entre los estados: [sin iniciar, fase1, …, faseN] */
+function repartir(M, d, n, modo) {
+  const c = new Array(n + 1).fill(0);
+  const { tot, x } = acumulado(d, n);
+  if (!tot) { c[0] = M; return c; }
   if (modo === 'marca') {
-    const col = v >= tot ? 'verde' : g >= tot ? 'azul' : c > 0 ? 'amarillo' : 'gris';
-    const r = { gris: 0, amarillo: 0, azul: 0, verde: 0 }; r[col] = M; return r;
+    let e = 0;
+    for (let i = n; i >= 1; i--) if (x[i - 1] >= tot) { e = i; break; }   // última fase completa
+    if (!e && x[0] > 0) e = 1;                                            // empezada pero sin completar
+    c[e] = M; return c;
   }
-  const nV = Math.round(v / tot * M), nZ = Math.round(g / tot * M) - nV, nA = Math.round(c / tot * M) - nV - nZ;
-  return { verde: nV, azul: Math.max(0, nZ), amarillo: Math.max(0, nA), gris: Math.max(0, M - nV - Math.max(0, nZ) - Math.max(0, nA)) };
+  const k = x.map(v => Math.round(v / tot * M));   // piezas del modelo que llegaron a cada fase
+  for (let i = 1; i <= n; i++) c[i] = Math.max(0, k[i - 1] - (i < n ? k[i] : 0));
+  c[0] = Math.max(0, M - k[0]);
+  return c;
+}
+
+async function aplicar(grupo, estado) {
+  for (const modelId in grupo) {
+    const ids = grupo[modelId];
+    for (let i = 0; i < ids.length; i += 5000) {
+      await API.viewer.setObjectState({ modelObjectIds: [{ modelId, objectRuntimeIds: ids.slice(i, i + 5000) }] }, estado);
+    }
+  }
 }
 
 async function pintar() {
   if (!PIEZAS || !DATOS) return;
-  const modo = $('modo').value;
-  const grupos = { gris: {}, amarillo: {}, azul: {}, verde: {} };   // color -> modelId -> [ids]
-  const cuenta = { gris: 0, amarillo: 0, azul: 0, verde: 0 };
+  const modo = $('modo').value, n = ESTADOS.length - 1;
+  GRUPOS = ESTADOS.map(() => ({}));   // estado -> modelId -> [ids]
+  const cuenta = ESTADOS.map(() => 0), kilos = ESTADOS.map(() => 0);
   const sinDatos = [];
   for (const cod in PIEZAS) {
     const arr = PIEZAS[cod];
     const d = DATOS.piezas[cod];
     if (!d) sinDatos.push(cod + ' (' + arr.length + ')');
-    const r = repartir(arr.length, d || [0, 0, 0, 0], modo);
+    const r = repartir(arr.length, d || [0], n, modo);
     let i = 0;
-    for (const col of ['verde', 'azul', 'amarillo', 'gris']) {
-      for (let k = 0; k < r[col]; k++, i++) {
+    for (let e = n; e >= 0; e--) {          // las primeras de la torre se pintan con la fase más avanzada
+      for (let k = 0; k < r[e]; k++, i++) {
         const o = arr[i];
-        (grupos[col][o.modelId] = grupos[col][o.modelId] || []).push(o.id);
-        cuenta[col]++;
+        (GRUPOS[e][o.modelId] = GRUPOS[e][o.modelId] || []).push(o.id);
+        cuenta[e]++;
+        kilos[e] += pesoDe(cod, o);
       }
     }
   }
   msg('Pintando el modelo…');
-  for (const col in grupos) {
-    for (const modelId in grupos[col]) {
-      const ids = grupos[col][modelId];
-      for (let i = 0; i < ids.length; i += 5000) {
-        await API.viewer.setObjectState({ modelObjectIds: [{ modelId, objectRuntimeIds: ids.slice(i, i + 5000) }] }, { color: COLORES[col] });
-      }
-    }
-  }
-  mostrarResumen(cuenta, sinDatos);
+  for (let e = 0; e <= n; e++) await aplicar(GRUPOS[e], { color: ESTADOS[e].color });
+  RESUMEN = { cuenta, kilos, sinDatos };
+  mostrarResumen();
+  msg('');
+  if (FILTRO != null && FILTRO <= n) await aislar(FILTRO, true); else FILTRO = null;
 }
 
-function mostrarResumen(cuenta, sinDatos) {
-  const total = Object.values(cuenta).reduce((a, b) => a + b, 0) || 1;
-  const orden = ['verde', 'azul', 'amarillo', 'gris'];
-  $('barra').innerHTML = orden.map(c => `<div style="width:${cuenta[c] / total * 100}%;background:${COLORES[c]}"></div>`).join('');
-  $('pct').textContent = `Despachado ${(cuenta.verde / total * 100).toFixed(1)}% · Galvanizado o más ${((cuenta.verde + cuenta.azul) / total * 100).toFixed(1)}% · Actualizado ${DATOS.actualizado}`;
-  $('ley').innerHTML = orden.map(c => `<div><span class="sw" style="background:${COLORES[c]}"></span>${NOMBRES[c]}<b>${cuenta[c].toLocaleString('es-PE')}</b></div>`).join('');
-  $('sub').textContent = total.toLocaleString('es-PE') + ' piezas en el modelo';
-  if (sinDatos.length) {
+function setMedida(m) {
+  MEDIDA = m;
+  $('mPeso').setAttribute('aria-pressed', m === 'peso');
+  $('mPiezas').setAttribute('aria-pressed', m === 'piezas');
+  mostrarResumen();
+  if (HISTORIAL && $('detEvo').open) dibujarCurva();
+}
+
+function mostrarResumen() {
+  if (!RESUMEN) return;
+  const n = ESTADOS.length - 1;
+  const kgTotal = RESUMEN.kilos.reduce((a, b) => a + b, 0);
+  $('mPeso').disabled = !kgTotal;
+  if (!kgTotal && MEDIDA === 'peso') { MEDIDA = 'piezas'; $('mPeso').setAttribute('aria-pressed', false); $('mPiezas').setAttribute('aria-pressed', true); }
+  const val = MEDIDA === 'peso' ? RESUMEN.kilos : RESUMEN.cuenta;
+  const total = val.reduce((a, b) => a + b, 0) || 1;
+  const piezas = RESUMEN.cuenta.reduce((a, b) => a + b, 0);
+  const orden = [...Array(n + 1).keys()].reverse();   // de la fase más avanzada a sin iniciar
+
+  $('sub').textContent = fmtN(piezas) + ' piezas en el modelo' + (kgTotal ? ' · ' + fmtT(kgTotal) : '') + ' · Registro del ' + DATOS.actualizado;
+  $('barra').innerHTML = orden.map(e => `<div style="width:${val[e] / total * 100}%;background:${ESTADOS[e].color}" title="${ESTADOS[e].nombre}"></div>`).join('');
+
+  // avance acumulado: lo que llegó a cada fase o a una posterior
+  const cum = []; let s = 0;
+  for (let e = n; e >= 1; e--) { s += val[e]; cum[e] = s; }
+  $('acum').innerHTML = ESTADOS.slice(1).map((st, j) => `<div><span>${st.nombre}${j < n - 1 ? ' o más' : ''}</span><b>${fmtP(cum[j + 1] / total)}</b></div>`).join('');
+
+  $('ley').innerHTML = orden.map(e => `<button data-e="${e}" onclick="aislar(${e})"><span class="sw" style="background:${ESTADOS[e].color}"></span>${ESTADOS[e].nombre}<b>${fmtV(val[e])}</b><small>${fmtP(val[e] / total)}</small></button>`).join('');
+  $('leyHint').style.display = 'block';
+  marcarLeyenda();
+
+  // de dónde sale el peso
+  let fuente = '';
+  if (MEDIDA === 'peso') {
+    if (DATOS.pesos) fuente = 'Peso unitario según el LISTADO.';
+    else {
+      const usados = Object.entries(PESO_MODELO.uso).map(([k, v]) => `${k} (${fmtN(v)})`).join(', ');
+      fuente = 'Peso según el modelo: ' + usados + '.' + (PESO_MODELO.sinPeso ? ` ${fmtN(PESO_MODELO.sinPeso)} piezas sin peso, no suman.` : '');
+    }
+  } else if (!kgTotal) fuente = 'El modelo no trae peso (' + PROP_PESO.join(' / ') + '); solo se puede medir por piezas.';
+  $('fuente').textContent = fuente;
+
+  if (RESUMEN.sinDatos.length) {
     $('detSin').style.display = 'block';
-    $('sumSin').textContent = sinDatos.length + ' códigos del modelo no están en el LISTADO (se pintan gris)';
-    $('listaSin').textContent = sinDatos.join(', ');
+    $('sumSin').textContent = RESUMEN.sinDatos.length + ' códigos del modelo no están en el LISTADO (se pintan gris)';
+    $('listaSin').textContent = RESUMEN.sinDatos.join(', ');
   } else $('detSin').style.display = 'none';
-  msg('');
+}
+
+function marcarLeyenda() {
+  document.querySelectorAll('#ley button').forEach(b => {
+    const activa = FILTRO != null && +b.dataset.e === FILTRO;
+    b.classList.toggle('activa', activa);
+    b.setAttribute('aria-pressed', activa);
+  });
+}
+
+/* muestra solo las piezas de una fase; pulsar de nuevo vuelve a mostrar todo */
+async function aislar(e, reaplicar) {
+  try {
+    if (!reaplicar && FILTRO === e) {
+      FILTRO = null;
+      await verTodo();
+      msg('');
+    } else {
+      FILTRO = e;
+      await API.viewer.setObjectState(undefined, { visible: false });
+      await aplicar(GRUPOS[e], { visible: true });
+      const cant = Object.values(GRUPOS[e]).reduce((a, ids) => a + ids.length, 0);
+      msg(cant ? `Mostrando solo: ${ESTADOS[e].nombre} (${fmtN(cant)} piezas).` : `No hay piezas en ${ESTADOS[e].nombre}.`);
+    }
+    marcarLeyenda();
+  } catch (err) { msg('Error: ' + (err.message || err), true); }
+}
+
+async function verTodo() {
+  try { await API.viewer.setObjectState(undefined, { visible: 'reset' }); }
+  catch (e) { await API.viewer.setObjectState(undefined, { visible: true }); }
+}
+
+/* ===================== EVOLUCIÓN SEMANAL ===================== */
+/* usa el historial de estado.json en GitHub: el último registro de cada semana */
+function rutaEstado() {
+  const dir = location.pathname.replace(/^.*?\/avance3d\//, '').replace(/[^/]*$/, '');
+  return dir + API_URL;
+}
+
+async function cargarEvolucion() {
+  if (!PIEZAS || !DATOS) { $('curva').textContent = 'Primero pulse Actualizar avance.'; return; }
+  if (HISTORIAL) { dibujarCurva(); return; }
+  $('curva').textContent = 'Leyendo el historial del registro…';
+  try {
+    const ruta = rutaEstado(), commits = [];
+    for (let pag = 1; pag <= 5; pag++) {
+      const r = await fetch(`https://api.github.com/repos/${REPO}/commits?path=${encodeURI(ruta)}&per_page=100&page=${pag}`);
+      if (!r.ok) throw new Error(r.status === 403 ? 'GitHub limitó las consultas por esta hora. Intente más tarde.' : 'No se pudo leer el historial (HTTP ' + r.status + ').');
+      const lote = await r.json();
+      commits.push(...lote);
+      if (lote.length < 100) break;
+    }
+    const porSemana = new Map();   // los commits llegan del más reciente al más antiguo
+    for (const c of commits) {
+      const f = new Date(c.commit.committer.date);
+      const lunes = new Date(f); lunes.setHours(0, 0, 0, 0); lunes.setDate(lunes.getDate() - (lunes.getDay() + 6) % 7);
+      if (!porSemana.has(lunes.getTime())) porSemana.set(lunes.getTime(), { fecha: f, sha: c.sha });
+    }
+    const semanas = [...porSemana.entries()].sort((a, b) => a[0] - b[0]).slice(-16).map(x => x[1]);
+    const puntos = await Promise.all(semanas.map(async s => {
+      const r = await fetch(`https://raw.githubusercontent.com/${REPO}/${s.sha}/${ruta}`);
+      return r.ok ? { fecha: s.fecha, datos: normalizarDatos(await r.json()) } : null;
+    }));
+    HISTORIAL = puntos.filter(Boolean);
+    dibujarCurva();
+  } catch (e) { $('curva').innerHTML = `<span class="err">${e.message || e}</span>`; }
+}
+
+/* fracción del total (peso o piezas) que llegó a cada fase según un registro */
+function fraccionPorFase(datos) {
+  const n = ESTADOS.length - 1;
+  const mapa = ESTADOS.slice(1).map(st => (datos.fases || []).findIndex((f, i) => describirFase(f, i).nombre === st.nombre));
+  const llego = new Array(n).fill(0); let total = 0;
+  for (const cod in PIEZAS) {
+    const arr = PIEZAS[cod], M = arr.length;
+    const w = MEDIDA === 'peso' ? arr.reduce((a, o) => a + pesoDe(cod, o), 0) / M : 1;
+    total += w * M;
+    const d0 = (datos.piezas || {})[cod]; if (!d0) continue;
+    const d = [d0[0]].concat(mapa.map(j => j >= 0 ? (d0[j + 1] || 0) : 0));
+    const { tot, x } = acumulado(d, n); if (!tot) continue;
+    x.forEach((v, i) => { llego[i] += Math.round(v / tot * M) * w; });
+  }
+  return llego.map(v => total ? v / total : 0);
+}
+
+function dibujarCurva() {
+  const P = HISTORIAL || [];
+  if (!P.length) { $('curva').textContent = 'Aún no hay historial guardado para este pedido.'; return; }
+  const n = ESTADOS.length - 1;
+  const serie = P.map(p => fraccionPorFase(p.datos));
+  const W = 300, H = 170, iz = 32, de = 8, ar = 8, ab = 22;
+  const X = i => P.length === 1 ? (iz + W - de) / 2 : iz + i * (W - iz - de) / (P.length - 1);
+  const Y = f => ar + (1 - f) * (H - ar - ab);
+  const fc = d => d.toLocaleDateString('es-PE', { day: '2-digit', month: '2-digit' });
+  let svg = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Avance acumulado por semana y por fase">`;
+  for (const g of [0, 0.25, 0.5, 0.75, 1]) {
+    svg += `<line x1="${iz}" x2="${W - de}" y1="${Y(g)}" y2="${Y(g)}" stroke="#E3E6E8"/>`;
+    svg += `<text x="${iz - 4}" y="${Y(g) + 3}" font-size="9" text-anchor="end" fill="#5B6870">${g * 100}%</text>`;
+  }
+  for (let j = 0; j < n; j++) {
+    const col = ESTADOS[j + 1].color;
+    svg += `<polyline points="${serie.map((s, i) => X(i).toFixed(1) + ',' + Y(s[j]).toFixed(1)).join(' ')}" fill="none" stroke="${col}" stroke-width="2"/>`;
+    serie.forEach((s, i) => { svg += `<circle cx="${X(i).toFixed(1)}" cy="${Y(s[j]).toFixed(1)}" r="2.5" fill="${col}"><title>${ESTADOS[j + 1].nombre}, ${fc(P[i].fecha)}: ${fmtP(s[j])}</title></circle>`; });
+  }
+  svg += `<text x="${X(0)}" y="${H - 6}" font-size="9" fill="#5B6870" text-anchor="${P.length === 1 ? 'middle' : 'start'}">${fc(P[0].fecha)}</text>`;
+  if (P.length > 1) svg += `<text x="${X(P.length - 1)}" y="${H - 6}" font-size="9" fill="#5B6870" text-anchor="end">${fc(P[P.length - 1].fecha)}</text>`;
+  svg += '</svg>';
+  let delta = '';
+  if (serie.length > 1) {
+    const a = serie[serie.length - 1], b = serie[serie.length - 2];
+    delta = ' Última semana: ' + ESTADOS.slice(1).map((st, j) => {
+      const v = (a[j] - b[j]) * 100;
+      return `${st.nombre} ${v >= 0 ? '+' : ''}${v.toLocaleString('es-PE', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} pts`;
+    }).join(', ') + '.';
+  }
+  $('curva').innerHTML = svg + `<div class="hint">${MEDIDA === 'peso' ? 'Por peso' : 'Por piezas'}, acumulado por fase; un punto por semana (último registro de cada semana).${delta}</div>`;
 }
 
 /* compara cuántas veces aparece cada código en el modelo vs. la CANT TOT del LISTADO */
@@ -226,7 +459,12 @@ function mostrarDiferencias() {
 }
 
 async function restablecer() {
-  try { await API.viewer.setObjectState(undefined, { color: 'reset' }); msg('Colores restablecidos.'); } catch (e) { msg('Error: ' + e, true); }
+  try {
+    await API.viewer.setObjectState(undefined, { color: 'reset' });
+    await verTodo();
+    FILTRO = null; marcarLeyenda();
+    msg('Colores restablecidos.');
+  } catch (e) { msg('Error: ' + e, true); }
 }
 </script>
 </body>
