@@ -113,6 +113,7 @@ const COLORES_EXTRA = ['#00897B', '#C2185B', '#6D4C41'];
 /* ========================================================= */
 
 let API = null, PIEZAS = null, DATOS = null, TODOS = {};   // TODOS: modelId -> ids que se pueden ocultar   // PIEZAS: {codigo: [{modelId, id, orden, peso}]}
+let NOMBRES_MODELO = {};   // modelId -> nombre del archivo IFC cargado
 let ESTADOS = [], GRUPOS = [], RESUMEN = null, FILTRO = null, MEDIDA = 'peso', HISTORIAL = null, PESO_MODELO = null;
 const $ = id => document.getElementById(id);
 const msg = (t, e) => { $('msg').textContent = t; $('msg').className = 'msg' + (e ? ' err' : ''); };
@@ -186,6 +187,10 @@ async function leerPiezasDelModelo() {
       }
     }
   }
+  try {   // nombre de cada archivo cargado, para saber de dónde sale cada pieza
+    const ms = await API.viewer.getModels('loaded');
+    NOMBRES_MODELO = {}; (ms || []).forEach(m => NOMBRES_MODELO[m.id] = m.name || m.id);
+  } catch (x) { NOMBRES_MODELO = {}; }
   Object.values(piezas).forEach(arr => arr.sort((a, b) => a.orden.localeCompare(b.orden) || a.id - b.id));
   mostrarTipos(clases, referencias);
   mostrarMuestra(muestra);
@@ -704,9 +709,22 @@ function mostrarDiferencias() {
     if (M !== T) dif.push({ cod, M, T });
   }
   dif.sort((a, b) => (b.M - b.T) - (a.M - a.T));
-  $('detDif').style.display = dif.length ? 'block' : 'none';
-  $('sumDif').textContent = dif.length + ' códigos con cantidad distinta (modelo vs LISTADO)';
-  $('listaDif').textContent = dif.map(x => `${x.cod}: modelo ${x.M} / LISTADO ${x.T}`).join(', ');
+  // piezas por archivo cargado: si hay más de un IFC en el visor, todos suman al conteo
+  const nombre = id => NOMBRES_MODELO[id] || ('modelo ' + String(id).slice(0, 8));
+  const porModelo = arr => arr.reduce((acc, o) => (acc[o.modelId] = (acc[o.modelId] || 0) + 1, acc), {});
+  const totales = {};
+  Object.values(PIEZAS).forEach(arr => arr.forEach(o => totales[o.modelId] = (totales[o.modelId] || 0) + 1));
+  const ids = Object.keys(totales), varios = ids.length > 1;
+  $('detDif').style.display = (dif.length || varios) ? 'block' : 'none';
+  $('sumDif').textContent = dif.length + ' códigos con cantidad distinta (modelo vs LISTADO)' + (varios ? ' · ' + ids.length + ' archivos leídos' : '');
+  const cab = 'Archivos leídos: ' + ids.map(id => `${nombre(id)} (${fmtN(totales[id])} pzs)`).join(' · ');
+  const det = dif.map(x => {
+    let t = `${x.cod}: modelo ${x.M} / LISTADO ${x.T}`;
+    if (varios) { const pm = porModelo(PIEZAS[x.cod]); t += ' [' + Object.keys(pm).map(id => `${nombre(id)}: ${pm[id]}`).join('; ') + ']'; }
+    return t;
+  }).join(', ');
+  $('listaDif').textContent = cab + (det ? '\n\n' + det : '');
+  $('listaDif').style.whiteSpace = 'pre-line';
 }
 
 async function restablecer() {
