@@ -98,6 +98,9 @@ const EXCLUIR_CLASES = /FASTENER|BOLT|ACCESSORY|WELD|OPENING|ASSEMBLY/;  // pern
 const IGNORAR_CODIGOS = /^(PL|A)\d+$|^\d+X+$/;   // PL../A..: letreros y textos; 2X, 3XX..: tuercas/arandelas de anclaje (no van en el LISTADO)
 const REPORTE = { CLIENTE: 'ELECNOR', PEDIDO: 'S00503', ELEMENTO: 'Paquete 3 – Soportes SE Babilonia' };   // datos para el reporte PDF
 const LOGO_URL = 'https://jersonbautista-35.github.io/avance3d/logo.jpg';   // logo de Electrocom en la raíz del repositorio
+const MODELO_PRINCIPAL = /SOP\s*BABILONIA/i;   // solo se leen los IFC cuyo nombre cumple esto (PQT3_SOP BABILONIA_REV.x.ifc); los IFC de soportes sueltos se ignoran
+// piezas (#) que forman cada conjunto soldado, según el PL REV 1: en el modelo cada pieza lleva el código del conjunto
+const PIEZAS_CONJUNTO = {26:5,27:5,29:5,30:5,31:5,32:5,33:5,34:5,54:7,55:7,56:7,57:7,72:4,73:4,74:5,75:6,76:6,82:5,83:5,91:5,92:5,93:5,100:3,101:3,103:5,104:5,105:5,110:5,125:3,126:3,132:5,133:5,134:5,135:5,136:5,137:5,138:5,139:5,140:5};
 const GRIS = '#9AA0A6';
 const rgb = h => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
 const opaco = h => { const [r, g, b] = rgb(h); return { r, g, b, a: 255 }; };   // color sin transparencia
@@ -113,7 +116,7 @@ const COLORES_EXTRA = ['#00897B', '#C2185B', '#6D4C41'];
 /* ========================================================= */
 
 let API = null, PIEZAS = null, DATOS = null, TODOS = {};   // TODOS: modelId -> ids que se pueden ocultar   // PIEZAS: {codigo: [{modelId, id, orden, peso}]}
-let NOMBRES_MODELO = {};   // modelId -> nombre del archivo IFC cargado
+let NOMBRES_MODELO = {}, IGNORADOS = [];   // modelId -> nombre del archivo IFC cargado; nombres de los IFC no leídos
 let ESTADOS = [], GRUPOS = [], RESUMEN = null, FILTRO = null, MEDIDA = 'peso', HISTORIAL = null, PESO_MODELO = null;
 const $ = id => document.getElementById(id);
 const msg = (t, e) => { $('msg').textContent = t; $('msg').className = 'msg' + (e ? ' err' : ''); };
@@ -152,7 +155,14 @@ async function leerPiezasDelModelo() {
   const usoPeso = {};  // propiedad de peso usada -> cuántas piezas
   let referencias = 0, muestra = null;
   const todos = {};
+  try {   // nombre de cada archivo cargado
+    const ms = await API.viewer.getModels('loaded');
+    NOMBRES_MODELO = {}; (ms || []).forEach(m => NOMBRES_MODELO[m.id] = m.name || m.id);
+  } catch (x) { NOMBRES_MODELO = {}; }
+  const hayPrincipal = grupos.some(g => MODELO_PRINCIPAL.test(NOMBRES_MODELO[g.modelId] || ''));
+  IGNORADOS = [];
   for (const g of grupos) {
+    if (hayPrincipal && !MODELO_PRINCIPAL.test(NOMBRES_MODELO[g.modelId] || '')) { IGNORADOS.push(NOMBRES_MODELO[g.modelId] || g.modelId); continue; }
     const ids = (g.objects || []).map(o => o.id);
     for (let i = 0; i < ids.length; i += 1000) {
       const props = await API.viewer.getObjectProperties(g.modelId, ids.slice(i, i + 1000));
@@ -187,10 +197,6 @@ async function leerPiezasDelModelo() {
       }
     }
   }
-  try {   // nombre de cada archivo cargado, para saber de dónde sale cada pieza
-    const ms = await API.viewer.getModels('loaded');
-    NOMBRES_MODELO = {}; (ms || []).forEach(m => NOMBRES_MODELO[m.id] = m.name || m.id);
-  } catch (x) { NOMBRES_MODELO = {}; }
   Object.values(piezas).forEach(arr => arr.sort((a, b) => a.orden.localeCompare(b.orden) || a.id - b.id));
   mostrarTipos(clases, referencias);
   mostrarMuestra(muestra);
@@ -236,7 +242,13 @@ function describirFase(f, i) {
 }
 
 /* peso unitario: el del LISTADO si estado.json lo trae ("pesos"), si no el del modelo */
-const pesoDe = (cod, o) => (DATOS && DATOS.pesos && DATOS.pesos[cod] > 0) ? DATOS.pesos[cod] : o.peso;
+/* el peso del LISTADO es por unidad del código; si el modelo tiene otra cantidad de objetos (ej. un conjunto = varias piezas),
+   se reparte para que el total del código sea igual al del LISTADO */
+const pesoDe = (cod, o) => {
+  if (!(DATOS && DATOS.pesos && DATOS.pesos[cod] > 0)) return o.peso;
+  const T = +((DATOS.piezas || {})[cod] || [0])[0] || 0, M = (PIEZAS && PIEZAS[cod]) ? PIEZAS[cod].length : 0;
+  return DATOS.pesos[cod] * (T > 0 && M > 0 ? T / M : 1);
+};
 
 async function actualizar() {
   $('btnAct').disabled = true;
@@ -705,8 +717,8 @@ function mostrarDiferencias() {
   const dif = [];
   for (const cod in PIEZAS) {
     const d = DATOS.piezas[cod]; if (!d) continue;
-    const M = PIEZAS[cod].length, T = d[0];
-    if (M !== T) dif.push({ cod, M, T });
+    const M = PIEZAS[cod].length, n = PIEZAS_CONJUNTO[cod] || 1, T = d[0] * n;   // conjuntos: se esperan sus piezas
+    if (M !== T) dif.push({ cod, M, T, conj: n > 1 ? d[0] : 0 });
   }
   dif.sort((a, b) => (b.M - b.T) - (a.M - a.T));
   // piezas por archivo cargado: si hay más de un IFC en el visor, todos suman al conteo
@@ -715,11 +727,13 @@ function mostrarDiferencias() {
   const totales = {};
   Object.values(PIEZAS).forEach(arr => arr.forEach(o => totales[o.modelId] = (totales[o.modelId] || 0) + 1));
   const ids = Object.keys(totales), varios = ids.length > 1;
-  $('detDif').style.display = (dif.length || varios) ? 'block' : 'none';
+  $('detDif').style.display = (dif.length || varios || IGNORADOS.length) ? 'block' : 'none';
   $('sumDif').textContent = dif.length + ' códigos con cantidad distinta (modelo vs LISTADO)' + (varios ? ' · ' + ids.length + ' archivos leídos' : '');
-  const cab = 'Archivos leídos: ' + ids.map(id => `${nombre(id)} (${fmtN(totales[id])} pzs)`).join(' · ');
+  const cab = 'Archivos leídos: ' + ids.map(id => `${nombre(id)} (${fmtN(totales[id])} pzs)`).join(' · ')
+    + (IGNORADOS.length ? '\nArchivos ignorados (no suman al avance ni se pintan): ' + IGNORADOS.join(' · ') : '')
+    + '\nConjuntos soldados: se comparan sus piezas (#) del PL, no la cantidad de conjuntos.';
   const det = dif.map(x => {
-    let t = `${x.cod}: modelo ${x.M} / LISTADO ${x.T}`;
+    let t = `${x.cod}: modelo ${x.M} / LISTADO ${x.T}` + (x.conj ? ` (${x.conj} conj. × ${x.T / x.conj} pzs)` : '');
     if (varios) { const pm = porModelo(PIEZAS[x.cod]); t += ' [' + Object.keys(pm).map(id => `${nombre(id)}: ${pm[id]}`).join('; ') + ']'; }
     return t;
   }).join(', ');
